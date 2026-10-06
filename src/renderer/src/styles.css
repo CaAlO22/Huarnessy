@@ -1,0 +1,232 @@
+@import 'tailwindcss';
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  color: #ececf5;
+  color-scheme: dark;
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #07070c;
+}
+
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(55% 45% at 12% 8%, rgba(99, 102, 241, 0.38), transparent 62%),
+    radial-gradient(45% 40% at 88% 16%, rgba(236, 72, 153, 0.3), transparent 62%),
+    radial-gradient(65% 60% at 50% 108%, rgba(34, 211, 238, 0.24), transparent 62%),
+    #07070c;
+}
+
+.glass {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.035));
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.glass-soft {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.drag {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---- Markdown ---- */
+.hui-md {
+  font-size: 13.5px;
+  line-height: 1.65;
+  word-break: break-word;
+}
+.hui-md > :first-child {
+  margin-top: 0;
+}
+.hui-md > :last-child {
+  margin-bottom: 0;
+}
+.hui-md p {
+  margin: 0.55em 0;
+}
+.hui-md h1,
+.hui-md h2,
+.hui-md h3,
+.hui-md h4,
+.hui-md h5,
+.hui-md h6 {
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #fff;
+}
+.hui-md h1 {
+  font-size: 1.5em;
+}
+.hui-md h2 {
+  font-size: 1.3em;
+}
+.hui-md h3 {
+  font-size: 1.15em;
+}
+.hui-md h4,
+.hui-md h5,
+.hui-md h6 {
+  font-size: 1em;
+}
+.hui-md ul,
+.hui-md ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.hui-md ul {
+  list-style: disc;
+}
+.hui-md ol {
+  list-style: decimal;
+}
+.hui-md li {
+  margin: 0.25em 0;
+}
+.hui-md li > ul,
+.hui-md li > ol {
+  margin: 0.25em 0;
+}
+.hui-md a {
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.hui-md strong {
+  color: #fff;
+  font-weight: 600;
+}
+.hui-md em {
+  font-style: italic;
+}
+.hui-md hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+.hui-md blockquote {
+  margin: 0.6em 0;
+  padding: 0.2em 0 0.2em 0.9em;
+  border-left: 3px solid rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.62);
+}
+.hui-md img {
+  max-width: 100%;
+  border-radius: 10px;
+}
+.hui-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 0.12em 0.38em;
+  border-radius: 6px;
+}
+.hui-md pre {
+  margin: 0.6em 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0d1117;
+}
+.hui-md pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 12.5px;
+}
+.hui-md table {
+  width: 100%;
+  margin: 0.6em 0;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.hui-md th,
+.hui-md td {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 5px 9px;
+  text-align: left;
+}
+.hui-md th {
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 600;
+}
+.hui-md input[type='checkbox'] {
+  margin-right: 0.4em;
+  vertical-align: middle;
+}
+.hui-md .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+.hui-md .katex {
+  font-size: 1.05em;
+}
+
+.hui-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.hui-code-live {
+  margin: 0.6em 0;
+  font-size: 12.5px;
+  background: #0d1117;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.hui-reasoning {
+  border-left: 2px solid rgba(255, 255, 255, 0.15);
+  padding-left: 0.75rem;
+  opacity: 0.55;
+  font-size: 12.5px;
+}
+
