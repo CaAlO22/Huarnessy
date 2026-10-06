@@ -253,33 +253,56 @@ body {
   scrollbar-gutter: stable;
 }
 
-/* One compact waiting surface; incoming text never waits for this animation. */
-.hui-reply-stage { position: relative; }
-.hui-reply-stage.is-waiting { min-height: 38px; }
-.hui-reply-wait {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: max-content;
+/* The waiting chip and first answer are the same glass surface. */
+.hui-reply-bubble {
+  box-sizing: border-box;
+  position: relative;
+  max-width: 82%;
+  min-width: 0;
+  padding: 12px 16px;
+  border-radius: 16px;
+}
+.hui-reply-bubble.is-waiting,
+.hui-reply-bubble.is-label-exit,
+.hui-reply-bubble.is-condensing,
+.hui-reply-bubble.is-dot-exit {
   height: 38px;
-  padding: 0 15px 0 11px;
-  border: 1px solid rgba(185, 231, 255, .19);
-  border-radius: 14px;
-  background: linear-gradient(125deg, rgba(207, 236, 255, .1), rgba(255, 255, 255, .035));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .13), 0 4px 16px rgba(0, 0, 0, .12);
+  padding: 0;
+  overflow: hidden;
+}
+.hui-reply-bubble.is-waiting,
+.hui-reply-bubble.is-label-exit { width: 108px; }
+.hui-reply-bubble.is-condensing { animation: hui-reply-condense 220ms cubic-bezier(.55, 0, .25, 1) both; }
+.hui-reply-bubble.is-dot-exit { width: 38px; }
+.hui-reply-bubble.is-unfolding {
+  height: 38px;
+  padding: 0;
+  overflow: hidden;
+  animation: hui-reply-unfold 200ms cubic-bezier(.2, .65, .2, 1) both;
+}
+.hui-reply-wait {
+  position: absolute;
+  inset: 0;
   color: rgba(232, 244, 255, .72);
   font-size: 12px;
   letter-spacing: .02em;
-  transform-origin: 20px center;
-  animation: hui-wait-enter 220ms ease-out both;
+  white-space: nowrap;
 }
+.hui-wait-label { position: absolute; top: 10px; left: 37px; }
+.is-label-exit .hui-wait-label { animation: hui-wait-label-exit 150ms ease-in both; }
+.is-condensing .hui-wait-label,
+.is-dot-exit .hui-wait-label { opacity: 0; clip-path: inset(0 100% 0 0); }
 .hui-wait-orbit {
+  position: absolute;
+  top: 9px;
+  left: 9px;
   display: grid;
   place-items: center;
   width: 18px;
   height: 18px;
   animation: hui-wait-spin 3.2s linear infinite;
 }
+.is-dot-exit .hui-wait-orbit { animation: hui-wait-dot-exit 90ms ease-in both; }
 .hui-wait-seed {
   width: 11px;
   height: 11px;
@@ -288,33 +311,36 @@ body {
   border-radius: 50%;
   animation: hui-wait-breathe 1.8s cubic-bezier(.45, 0, .25, 1) infinite;
 }
-.hui-reply-wait.is-leaving {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 1;
-  pointer-events: none;
-  animation: hui-wait-leave 160ms ease-in both;
+.hui-reply-bubble.is-waiting .hui-reply-content,
+.hui-reply-bubble.is-label-exit .hui-reply-content,
+.hui-reply-bubble.is-condensing .hui-reply-content,
+.hui-reply-bubble.is-dot-exit .hui-reply-content { visibility: hidden; }
+.hui-reply-bubble.is-unfolding .hui-reply-content { visibility: hidden; }
+@keyframes hui-reply-condense {
+  from { width: 108px; }
+  to { width: 38px; }
 }
-.is-revealing > .hui-reply-content { animation: hui-reply-arrive 210ms ease-out both; }
-@keyframes hui-wait-enter {
-  from { opacity: 0; transform: translateY(3px) scale(.94); }
-  to { opacity: 1; transform: none; }
+@keyframes hui-wait-label-exit {
+  from { opacity: 1; transform: translateX(0); clip-path: inset(0 0 0 0); }
+  to { opacity: 0; transform: translateX(-8px); clip-path: inset(0 100% 0 0); }
 }
 @keyframes hui-wait-spin { to { transform: rotate(360deg); } }
 @keyframes hui-wait-breathe {
   0%, 100% { transform: scale(.48); background: #82e5ed; box-shadow: 0 0 8px rgba(130, 229, 237, .3); }
   45%, 60% { transform: scale(1); background: transparent; border-top-color: #d5c6ff; box-shadow: 0 0 13px rgba(183, 162, 255, .22); }
 }
-@keyframes hui-wait-leave {
-  to { opacity: 0; transform: scale(.22, .5); }
+@keyframes hui-wait-dot-exit {
+  to { opacity: 0; transform: scale(.3) rotate(90deg); }
 }
-@keyframes hui-reply-arrive {
-  from { transform: translateY(3px); }
-  to { transform: none; }
+@keyframes hui-reply-unfold {
+  from { width: 38px; }
+  to { width: 82%; }
 }
 @media (prefers-reduced-motion: reduce) {
   .hui-wait-orbit, .hui-wait-seed { animation: none; }
-  .hui-reply-wait, .hui-reply-wait.is-leaving, .is-revealing > .hui-reply-content { animation-duration: 1ms; }
+  .hui-reply-bubble.is-condensing,
+  .hui-reply-bubble.is-unfolding,
+  .is-label-exit .hui-wait-label,
+  .is-dot-exit .hui-wait-orbit { animation-duration: 1ms; }
 }
 

@@ -289,7 +289,7 @@ app.whenReady().then(async () => {
       await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})(true)`)
       await writeFile(join(__dirname, '../out/reply-wait-preview.png'), (await window.webContents.capturePage()).toPNG())
       await window.webContents.executeJavaScript(`window.benchEmit('message.part.updated', { part: { sessionID: 'benchmark-session', messageID: 'ui-reply', id: 'ui-reply-part', type: 'text', text: '收到啦，回复会从这里自然展开。\\n\\n等待条收拢后，正文继续实时显示。' } }); window.benchEmit('session.error', { sessionID: 'benchmark-session', error: { message: '' } })`)
-      await new Promise(resolve => setTimeout(resolve, 350))
+      await new Promise(resolve => setTimeout(resolve, 750))
       await writeFile(join(__dirname, '../out/reply-content-preview.png'), (await window.webContents.capturePage()).toPNG())
       await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
       await new Promise(resolve => setTimeout(resolve, 100))

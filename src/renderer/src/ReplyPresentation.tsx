@@ -1,36 +1,57 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
-// Keep this aligned with PartView: protocol bookkeeping is not visible content.
+// Protocol bookkeeping has no visual surface of its own.
 export function hasVisiblePart(part: any): boolean {
   if (part.type === 'text' || part.type === 'reasoning') return !!part.text
   return part.type === 'tool' || part.type === 'file' || part.type === 'retry'
 }
 
-export function ReplyPresentation({ waiting, children }: { waiting: boolean; children: ReactNode }): React.ReactElement {
+type Phase = 'waiting' | 'label-exit' | 'condensing' | 'dot-exit' | 'unfolding' | 'ready'
+
+export function ReplyPresentation({ waiting, children }: { waiting: boolean; children?: ReactNode }): React.ReactElement {
   const wasWaiting = useRef(waiting)
-  const [leaving, setLeaving] = useState(false)
+  const [phase, setPhase] = useState<Phase>(waiting ? 'waiting' : 'ready')
+
   useLayoutEffect(() => {
-    if (wasWaiting.current && !waiting) setLeaving(true)
-    if (waiting) setLeaving(false)
+    if (waiting) setPhase('waiting')
+    else if (wasWaiting.current) setPhase('label-exit')
     wasWaiting.current = waiting
   }, [waiting])
 
+  const showWait = phase === 'waiting' || phase === 'label-exit' || phase === 'condensing' || phase === 'dot-exit'
   return (
-    <div className={`hui-reply-stage${waiting ? ' is-waiting' : ''}${leaving ? ' is-revealing' : ''}`}>
-      {waiting || leaving ? (
-        <div
-          className={`hui-reply-wait${leaving ? ' is-leaving' : ''}`}
-          role={waiting ? 'status' : undefined}
-          aria-hidden={leaving || undefined}
-          onAnimationEnd={(event) => {
-            if (event.target === event.currentTarget && event.animationName === 'hui-wait-leave') setLeaving(false)
-          }}
-        >
-          <span className="hui-wait-orbit" aria-hidden="true"><span className="hui-wait-seed" /></span>
-          <span>等待回复</span>
+    <div className="hui-reply-stage">
+      <div
+        className={`glass hui-message hui-reply-bubble is-${phase}`}
+        onAnimationEnd={(event) => {
+          if (event.target !== event.currentTarget) return
+          if (phase === 'condensing' && event.animationName === 'hui-reply-condense') setPhase('dot-exit')
+          if (phase === 'unfolding' && event.animationName === 'hui-reply-unfold') setPhase('ready')
+        }}
+      >
+        {showWait ? (
+          <div className="hui-reply-wait" role={waiting ? 'status' : undefined} aria-hidden={!waiting || undefined}>
+            <span
+              className="hui-wait-orbit"
+              aria-hidden="true"
+              onAnimationEnd={(event) => {
+                if (phase === 'dot-exit' && event.animationName === 'hui-wait-dot-exit') setPhase('unfolding')
+              }}
+            ><span className="hui-wait-seed" /></span>
+            <span
+              className="hui-wait-label"
+              onAnimationEnd={(event) => {
+                if (phase === 'label-exit' && event.animationName === 'hui-wait-label-exit') {
+                  setPhase('condensing')
+                }
+              }}
+            >等待回复</span>
+          </div>
+        ) : null}
+        <div className="hui-reply-content flex min-w-0 flex-col gap-2" aria-hidden={phase !== 'ready' || undefined}>
+          {children}
         </div>
-      ) : null}
-      <div className="hui-reply-content space-y-4">{children}</div>
+      </div>
     </div>
   )
 }

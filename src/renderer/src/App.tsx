@@ -89,9 +89,13 @@ const PartView = memo(function PartView({ part, completed }: { part: any; comple
   return null
 })
 
-const MessageView = memo(function MessageView({ msg }: { msg: MessageEntry }): React.ReactElement | null {
+const MessageView = memo(function MessageView({ msg, inReply = false }: { msg: MessageEntry; inReply?: boolean }): React.ReactElement | null {
   const isUser = msg.info?.role === 'user'
   if (!msg.parts.some(hasVisiblePart)) return null
+  const parts = msg.parts.map((p, i) => (
+    <PartView key={p.id ?? i} part={p} completed={isUser || msg.info?.time?.completed != null} />
+  ))
+  if (inReply) return <div className="flex min-w-0 flex-col gap-2">{parts}</div>
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -99,9 +103,7 @@ const MessageView = memo(function MessageView({ msg }: { msg: MessageEntry }): R
           isUser ? 'border border-white/15 bg-white/12' : 'glass hui-message'
         }`}
       >
-        {msg.parts?.map((p, i) => (
-          <PartView key={p.id ?? i} part={p} completed={isUser || msg.info?.time?.completed != null} />
-        ))}
+        {parts}
       </div>
     </div>
   )
@@ -143,6 +145,9 @@ export default function App(): React.ReactElement {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const beforeRequestUserId = useRef<string | null>(null)
+  const pendingTurnKey = useRef<string | null>(null)
+  const turnKeySequence = useRef(0)
+  const turnKeys = useRef(new Map<string, string>())
   const [lastError, setLastError] = useState<string | null>(null)
   const [sessionMenu, setSessionMenu] = useState<SessionMenuTarget | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -304,6 +309,8 @@ export default function App(): React.ReactElement {
     if (!c || deletedSessions.current.has(id) || deletingRef.current?.id === id) return
     closeSessionMenu()
     clearEvents()
+    turnKeys.current.clear()
+    pendingTurnKey.current = null
     const epoch = sessionEpoch.current
     const version = revision.current
     setActiveId(id)
@@ -331,6 +338,8 @@ export default function App(): React.ReactElement {
     setSessionMenu(previous => previous?.id === id ? null : previous)
     if (activeIdRef.current === id) {
       clearEvents()
+      turnKeys.current.clear()
+      pendingTurnKey.current = null
       activeIdRef.current = null
       setActiveId(null)
       setMessages([])
@@ -377,6 +386,8 @@ export default function App(): React.ReactElement {
     esRef.current?.close()
     esRef.current = null
     clearEvents()
+    turnKeys.current.clear()
+    pendingTurnKey.current = null
     closeSessionMenu()
     sessionListVersion.current++
     deletedSessions.current.clear()
@@ -601,6 +612,7 @@ export default function App(): React.ReactElement {
     if (selectedAgent) body.agent = selectedAgent
 
     beforeRequestUserId.current = [...messages].reverse().find((message) => message.info?.role === 'user')?.info?.id ?? null
+    pendingTurnKey.current = `reply-request-${++turnKeySequence.current}`
     setBusy(true)
     setLastError(null)
     stickBottom.current = true
@@ -649,13 +661,42 @@ export default function App(): React.ReactElement {
         ? 'bg-rose-400'
         : 'bg-amber-400'
 
-  let lastUserIndex = messages.length - 1
-  while (lastUserIndex >= 0 && messages[lastUserIndex].info?.role !== 'user') lastUserIndex--
-  const awaitingUserEcho = busy && (messages[lastUserIndex]?.info?.id ?? null) === beforeRequestUserId.current
-  const replyStart = awaitingUserEcho ? messages.length : lastUserIndex + 1
-  const earlierMessages = messages.slice(0, replyStart)
-  const replyMessages = messages.slice(replyStart)
-  const waitingForReply = busy && !replyMessages.some((message) => message.parts.some(hasVisiblePart))
+  const lastUser = [...messages].reverse().find((message) => message.info?.role === 'user')
+  const awaitingUserEcho = busy && (lastUser?.info?.id ?? null) === beforeRequestUserId.current
+  if (busy && !awaitingUserEcho && lastUser?.info?.id && pendingTurnKey.current) {
+    if (!turnKeys.current.has(lastUser.info.id)) turnKeys.current.set(lastUser.info.id, pendingTurnKey.current)
+  }
+
+  // Keep each turn at one stable React position. Moving an older reply into a
+  // different parent would remount its Worker-rendered Markdown on every send.
+  const conversation: React.ReactNode[] = []
+  let turnReplies: MessageEntry[] = []
+  let turnKey = 'reply-initial'
+  const appendReply = (waiting: boolean): void => {
+    const visible = turnReplies.some((message) => message.parts.some(hasVisiblePart))
+    if (!visible && !waiting) return
+    conversation.push(
+      <ReplyPresentation key={turnKey} waiting={waiting && !visible}>
+        {turnReplies.map((message, index) => (
+          <MessageView key={message.info?.id ?? index} msg={message} inReply />
+        ))}
+      </ReplyPresentation>
+    )
+  }
+  for (const [index, message] of messages.entries()) {
+    if (message.info?.role === 'user') {
+      appendReply(false)
+      conversation.push(<MessageView key={message.info?.id ?? `user-${index}`} msg={message} />)
+      turnKey = turnKeys.current.get(message.info?.id) ?? `reply-${message.info?.id ?? index}`
+      turnReplies = []
+    } else {
+      turnReplies.push(message)
+    }
+  }
+  appendReply(busy && !awaitingUserEcho)
+  if (busy && awaitingUserEcho) {
+    conversation.push(<ReplyPresentation key={pendingTurnKey.current ?? 'reply-pending'} waiting />)
+  }
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden">
@@ -795,14 +836,7 @@ export default function App(): React.ReactElement {
                   <div className="text-lg font-medium text-white/60">开始一段对话</div>
                   <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
                 </div>
-              ) : (
-                earlierMessages.map((m, i) => <MessageView key={m.info?.id ?? i} msg={m} />)
-              )}
-              {messages.length > 0 || busy ? (
-                <ReplyPresentation key={activeId ?? 'initial-reply'} waiting={waitingForReply}>
-                  {replyMessages.map((m, i) => <MessageView key={m.info?.id ?? i} msg={m} />)}
-                </ReplyPresentation>
-              ) : null}
+              ) : conversation}
             </div>
           </div>
 
