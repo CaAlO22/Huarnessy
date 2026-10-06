@@ -29,32 +29,56 @@ interface SelectedModel {
 
 const unwrap = (r: any): any => (r && r.data !== undefined ? r.data : r)
 
-const PartView = memo(function PartView({ part, completed }: { part: any; completed: boolean }): React.ReactElement | null {
+const toolColors: Record<string, string> = {
+  read: 'read',
+  write: 'write',
+  edit: 'write',
+  apply_patch: 'write',
+  glob: 'glob',
+  grep: 'search',
+  bash: 'shell',
+  task: 'task',
+  todowrite: 'task',
+  webfetch: 'web',
+  websearch: 'web'
+}
+
+const PartView = memo(function PartView({ part, completed, textLimit }: { part: any; completed: boolean; textLimit?: number }): React.ReactElement | null {
   const done = completed || part.time?.end != null
+  let text: string = part.text ?? ''
+  if (textLimit !== undefined && textLimit < text.length) {
+    let end = Math.max(0, textLimit)
+    // Do not split a surrogate pair while revealing a received chunk.
+    if (end > 0 && end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--
+    text = text.slice(0, end)
+  }
   if (part.type === 'text') {
-    if (!part.text) return null
-    return <StreamingMarkdown text={part.text} done={done} />
+    if (!text) return null
+    return <StreamingMarkdown text={text} done={done} />
   }
 
   if (part.type === 'reasoning') {
-    if (!part.text) return null
+    if (!text) return null
     return (
       <div className="hui-reasoning">
-        <StreamingMarkdown text={part.text} done={done} />
+        <StreamingMarkdown text={text} done={done} />
       </div>
     )
   }
 
   if (part.type === 'tool') {
     const state = part.state ?? {}
+    const toolName = String(part.tool ?? 'Tool')
+    const toolColor = toolColors[toolName.toLowerCase()] ?? 'default'
+    const displayName = toolName.charAt(0).toUpperCase() + toolName.slice(1)
     return (
-      <details className="glass-soft rounded-xl px-3 py-2 text-xs">
-        <summary className="flex cursor-pointer list-none items-center gap-2">
-          <span className="font-mono text-[11px] text-cyan-200/90">{part.tool}</span>
-          <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/60">
+      <details className="hui-tool-call" data-tool-color={toolColor}>
+        <summary className="hui-tool-summary">
+          <span className="hui-tool-name">{displayName}</span>
+          <span className="hui-tool-status">
             {state.status ?? 'running'}
           </span>
-          {state.title ? <span className="truncate text-white/50">{state.title}</span> : null}
+          {state.title ? <span className="hui-tool-title" title={String(state.title)}>{state.title}</span> : null}
         </summary>
         {state.input ? (
           <pre className="hui-code mt-2 max-h-48 overflow-auto">{JSON.stringify(state.input, null, 2)}</pre>
@@ -89,17 +113,22 @@ const PartView = memo(function PartView({ part, completed }: { part: any; comple
   return null
 })
 
-const MessageView = memo(function MessageView({ msg, inReply = false }: { msg: MessageEntry; inReply?: boolean }): React.ReactElement | null {
+const MessageView = memo(function MessageView({ msg, inReply = false, visibleChars }: { msg: MessageEntry; inReply?: boolean; visibleChars?: number }): React.ReactElement | null {
   const isUser = msg.info?.role === 'user'
-  if (!msg.parts.some(hasVisiblePart)) return null
-  const parts = msg.parts.map((p, i) => (
-    <PartView key={p.id ?? i} part={p} completed={isUser || msg.info?.time?.completed != null} />
-  ))
-  if (inReply) return <div className="flex min-w-0 flex-col gap-2">{parts}</div>
+  const visibleParts = msg.parts.filter(hasVisiblePart)
+  if (visibleParts.length === 0) return null
+  let remaining = visibleChars
+  const parts = msg.parts.map((p, i) => {
+    const textPart = p.type === 'text' || p.type === 'reasoning'
+    const limit = textPart ? remaining : undefined
+    if (textPart && remaining !== undefined) remaining = Math.max(0, remaining - (p.text?.length ?? 0))
+    return <PartView key={p.id ?? i} part={p} completed={isUser || msg.info?.time?.completed != null} textLimit={limit} />
+  })
+  if (inReply) return <div className="hui-message-parts flex min-w-0 flex-col gap-2" data-first-part={visibleParts[0].type} data-last-part={visibleParts[visibleParts.length - 1].type}>{parts}</div>
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`flex min-w-0 max-w-[82%] flex-col gap-2 rounded-2xl px-4 py-3 ${
+        className={`hui-message-parts flex min-w-0 max-w-[82%] flex-col gap-2 rounded-2xl px-4 py-3 ${
           isUser ? 'border border-white/15 bg-white/12' : 'glass hui-message'
         }`}
       >
@@ -675,11 +704,20 @@ export default function App(): React.ReactElement {
   const appendReply = (waiting: boolean): void => {
     const visible = turnReplies.some((message) => message.parts.some(hasVisiblePart))
     if (!visible && !waiting) return
+    const replies = turnReplies
+    const textLength = replies.reduce((total, message) => total + message.parts.reduce((count, part) =>
+      count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0), 0)
     conversation.push(
-      <ReplyPresentation key={turnKey} waiting={waiting && !visible}>
-        {turnReplies.map((message, index) => (
-          <MessageView key={message.info?.id ?? index} msg={message} inReply />
-        ))}
+      <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength}>
+        {(visibleChars) => {
+          let remaining = visibleChars
+          return replies.map((message, index) => {
+            const allowance = remaining
+            if (remaining !== undefined) remaining = Math.max(0, remaining - message.parts.reduce((total, part) =>
+              total + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0))
+            return <MessageView key={message.info?.id ?? index} msg={message} inReply visibleChars={allowance} />
+          })
+        }}
       </ReplyPresentation>
     )
   }

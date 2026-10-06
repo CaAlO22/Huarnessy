@@ -230,6 +230,98 @@ body {
   font-size: 12.5px;
 }
 
+.hui-message-parts > .hui-tool-call + :not(.hui-tool-call),
+.hui-message-parts > :not(.hui-tool-call) + .hui-tool-call,
+.hui-reply-content > .hui-message-parts[data-last-part='tool'] + .hui-message-parts:not([data-first-part='tool']),
+.hui-reply-content > .hui-message-parts:not([data-last-part='tool']) + .hui-message-parts[data-first-part='tool'] {
+  margin-top: 12px;
+}
+
+.hui-tool-call {
+  --tool-accent: #8be0e7;
+  --tool-surface: rgba(66, 191, 202, 0.12);
+  --tool-border: rgba(116, 222, 231, 0.3);
+  box-sizing: border-box;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--tool-border);
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--tool-surface), rgba(255, 255, 255, 0.025));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+}
+.hui-tool-call[data-tool-color='read'] {
+  --tool-accent: #a9dbff;
+  --tool-surface: rgba(102, 184, 245, 0.15);
+  --tool-border: rgba(150, 207, 255, 0.36);
+}
+.hui-tool-call[data-tool-color='write'] {
+  --tool-accent: #ffb66f;
+  --tool-surface: rgba(245, 139, 45, 0.15);
+  --tool-border: rgba(255, 172, 94, 0.36);
+}
+.hui-tool-call[data-tool-color='glob'] {
+  --tool-accent: #7b9fff;
+  --tool-surface: rgba(44, 78, 175, 0.22);
+  --tool-border: rgba(105, 140, 245, 0.38);
+}
+.hui-tool-call[data-tool-color='search'] {
+  --tool-accent: #88dfc7;
+  --tool-surface: rgba(53, 167, 133, 0.15);
+  --tool-border: rgba(119, 219, 186, 0.32);
+}
+.hui-tool-call[data-tool-color='shell'] {
+  --tool-accent: #ceb3ff;
+  --tool-surface: rgba(145, 101, 215, 0.16);
+  --tool-border: rgba(184, 143, 244, 0.34);
+}
+.hui-tool-call[data-tool-color='task'] {
+  --tool-accent: #f2a9d8;
+  --tool-surface: rgba(199, 91, 160, 0.15);
+  --tool-border: rgba(236, 150, 207, 0.32);
+}
+.hui-tool-call[data-tool-color='web'] {
+  --tool-accent: #b6df91;
+  --tool-surface: rgba(136, 180, 77, 0.14);
+  --tool-border: rgba(172, 215, 120, 0.32);
+}
+.hui-tool-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+}
+.hui-tool-summary::-webkit-details-marker { display: none; }
+.hui-tool-name {
+  flex: none;
+  color: var(--tool-accent);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.hui-tool-status {
+  flex: none;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--tool-accent);
+  background: var(--tool-surface);
+  font-size: 10px;
+  line-height: 1.3;
+}
+.hui-tool-title {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(239, 242, 250, 0.7);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hui-tool-call .hui-code { max-width: 100%; }
+
 /* The enclosing chat panel already blurs the backdrop. A second blur layer
    growing with each reply needlessly enlarges the compositor's render surface. */
 .hui-message {
