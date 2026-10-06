@@ -126,6 +126,92 @@ const regressions = async () => {
   return passed
 }
 
+const sessionDeletionRegressions = async () => {
+  const passed = []
+  const waitFor = async predicate => {
+    const start = performance.now()
+    while (!predicate()) {
+      if (performance.now() - start > 5000) throw new Error('Session deletion regression timed out')
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  const check = (condition, name) => { if (!condition) throw new Error(name); passed.push(name) }
+  const row = title => Array.from(document.querySelectorAll('aside button')).find(button => button.title === title)
+  const menu = () => document.querySelector('[role="menu"]')
+  const rightClick = async (title, x = 100, y = 120) => {
+    row(title).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: x, clientY: y }))
+    await waitFor(menu)
+  }
+  window.benchEmit('message.part.updated', { part: { id: 'regression-part', messageID: 'regression', sessionID: 'benchmark-session', type: 'text', text: '保留当前会话' } })
+  await waitFor(() => document.querySelector('.hui-md')?.textContent === '保留当前会话')
+  await rightClick('Other session', innerWidth - 1, innerHeight - 1)
+  const bounds = menu().getBoundingClientRect()
+  check(bounds.right <= innerWidth && bounds.bottom <= innerHeight, 'context menu stays within the viewport')
+  check(row('Streaming benchmark').classList.contains('glass-soft'), 'right-click does not change the active session')
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await waitFor(() => !menu())
+  check(!menu(), 'Escape dismisses the context menu')
+  await rightClick('Other session')
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  await waitFor(() => !menu())
+  check(!menu(), 'clicking outside dismisses the context menu')
+
+  window.benchDeleteFailure = true
+  await rightClick('Other session')
+  menu().querySelector('button').click()
+  await waitFor(() => document.body.textContent.includes('删除会话失败'))
+  check(!!row('Other session') && document.querySelector('.hui-md')?.textContent === '保留当前会话', 'failed deletion preserves the session and current messages')
+  check(window.benchRequests.at(-1).method === 'DELETE' && window.benchRequests.at(-1).path === '/session/other-session', 'deletion uses DELETE for the clicked session')
+  window.benchDeleteFailure = false
+
+  window.benchHoldDelete = true
+  const before = window.benchRequests.filter(request => request.method === 'DELETE').length
+  await rightClick('Other session')
+  const deleteButton = menu().querySelector('button')
+  deleteButton.click(); deleteButton.click()
+  await waitFor(() => !!window.benchReleaseDelete)
+  check(row('Other session').disabled, 'session is disabled while deletion is pending')
+  check(window.benchRequests.filter(request => request.method === 'DELETE').length === before + 1, 'repeated clicks do not send duplicate deletions')
+  window.benchNextList = [...window.benchSessions]
+  window.benchHoldDelete = false
+  window.benchReleaseDelete()
+  await waitFor(() => !row('Other session'))
+  await new Promise(resolve => setTimeout(resolve, 100))
+  check(!row('Other session'), 'a stale list response cannot restore a deleted session')
+  check(document.querySelector('.hui-md')?.textContent === '保留当前会话', 'deleting an inactive session preserves the active conversation')
+
+  await rightClick('Streaming benchmark')
+  window.benchEmit('message.part.delta', { sessionID: 'benchmark-session', messageID: 'regression', partID: 'regression-part', field: 'text', delta: '待提交内容' })
+  menu().querySelector('button').click()
+  await waitFor(() => !row('Streaming benchmark'))
+  window.benchEmit('message.part.delta', { sessionID: 'benchmark-session', messageID: 'regression', partID: 'regression-part', field: 'text', delta: '迟到内容' })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  check(!document.querySelector('.hui-md') && document.body.textContent.includes('开始一段对话'), 'deleting the active session clears pending and late streamed content')
+
+  window.benchSessions.push({ id: 'missing-session', title: 'Missing session' })
+  window.benchMissingID = 'missing-session'
+  window.benchEmit('session.created', {})
+  await waitFor(() => !!row('Missing session'))
+  await rightClick('Missing session')
+  menu().querySelector('button').click()
+  await waitFor(() => !row('Missing session'))
+  check(!document.body.textContent.includes('删除会话失败'), 'already-deleted sessions are handled without an error')
+
+  window.benchSessions.push({ id: 'external-session', title: 'External session' })
+  window.benchEmit('session.created', {})
+  await waitFor(() => !!row('External session'))
+  row('External session').click()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  window.benchEmit('message.part.updated', { part: { id: 'external-part', messageID: 'external-message', sessionID: 'external-session', type: 'text', text: '外部会话' } })
+  await waitFor(() => document.querySelector('.hui-md')?.textContent === '外部会话')
+  await rightClick('External session')
+  window.benchSessions = window.benchSessions.filter(session => session.id !== 'external-session')
+  window.benchEmit('session.deleted', { info: { id: 'external-session' } })
+  await waitFor(() => !row('External session') && !document.querySelector('.hui-md') && !menu())
+  check(!menu(), 'external deletion clears the active session and its context menu')
+  return passed
+}
+
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ width: 1200, height: 820, show: false, webPreferences: {
     preload: join(__dirname, 'stream-benchmark-preload.cjs'), sandbox: false,
@@ -156,6 +242,7 @@ app.whenReady().then(async () => {
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     console.log(JSON.stringify({ regressions: await window.webContents.executeJavaScript(`(${regressions.toString()})()`) }))
+    console.log(JSON.stringify({ sessionDeletion: await window.webContents.executeJavaScript(`(${sessionDeletionRegressions.toString()})()`) }))
   } catch (error) {
     console.error(error)
     process.exitCode = 1

@@ -61,6 +61,7 @@ OpencodeHUI/
       └─ src/
          ├─ main.tsx           # 挂载 + 引入 katex/highlight 的 CSS
          ├─ App.tsx            # 全部界面与事件处理（核心文件）
+         ├─ SessionContextMenu.tsx # 会话右键菜单、定位、关闭与焦点管理
          ├─ stream-state.ts   # 按 SSE 顺序归并消息事件
          ├─ StreamingMarkdown.tsx # 即时文本展示、格式化调度与 DOM 复用
          ├─ markdown.worker.ts # Markdown / KaTeX / 高亮计算与有界缓存
@@ -180,7 +181,19 @@ npm run test:stream -- --production   # 直接加载 out/renderer/index.html，�
 
 ---
 
-## 8. 待办 / 已知限制
+## 8. 会话列表与删除（2026-10-06）
+
+- 在左侧会话条目上右键，点击“删除会话”，通过 SDK 的 `session.delete({ path: { id } })` 调用 `DELETE /session/{id}`。右键不改变当前选中的会话。
+- 菜单限制在窗口可视范围内；点击外部、按 Escape/Tab、滚动会话列表、调整窗口大小或窗口失焦时关闭。
+- 删除期间目标条目显示“正在删除…”，阻止重复请求；服务端确认成功后才移除列表项。删除失败保留会话并显示错误，404 视为会话已经删除。
+- 删除当前会话时取消待提交增量及消息刷新，清空消息、当前会话和忙碌状态，返回初始对话界面；删除其他会话保留当前对话。
+- `session.deleted` SSE 事件同样更新本地状态。会话列表请求检查请求版本及连接身份，并过滤已删除 ID，防止旧响应恢复已删除条目。
+- `SessionContextMenu.tsx` 负责菜单展示；`App.tsx` 的 `deleteSession`、`forgetSession` 负责请求及状态清理。
+- `npm run test:stream` 现包含 13 项会话删除回归断言，使用假内核验证菜单关闭与定位、请求目标、失败保留、重复点击、延迟响应、当前/非当前会话删除、404 和外部删除事件。该功能的类型检查、构建、开发模式回归已通过。
+
+---
+
+## 9. 待办 / 已知限制
 
 - 格式化计算期间，新增后缀先以原始文本显示，Worker 返回后更新为 Markdown；超长单段落仍存在浏览器布局成本。
 - 长代码块在闭合成围栏前不高亮（有意为之，换取流式性能）。
@@ -188,11 +201,13 @@ npm run test:stream -- --production   # 直接加载 out/renderer/index.html，�
 
 ---
 
-## 9. 快速改动指引
+## 10. 快速改动指引
 
 | 想改什么 | 去哪里 |
 |---|---|
 | 界面 / SSE 接收 / 会话切换 / 自动滚动 | `src/renderer/src/App.tsx` |
+| 会话右键菜单 / 菜单定位与关闭 | `src/renderer/src/SessionContextMenu.tsx` |
+| 会话删除请求 / 删除后的状态清理 | `src/renderer/src/App.tsx` 的 `deleteSession`、`forgetSession` |
 | 有序消息归并 / delta 与快照更新 | `src/renderer/src/stream-state.ts` |
 | 即时文本 / Worker 调度 / DOM 片段复用 | `src/renderer/src/StreamingMarkdown.tsx` |
 | Markdown 解析 / 公式与高亮 / 格式化缓存 | `src/renderer/src/markdown.worker.ts` |

@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createOpencodeClient } from '@opencode-ai/sdk/client'
 import { StreamingMarkdown } from './StreamingMarkdown'
+import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
 
 interface ServerInfo {
@@ -137,6 +138,8 @@ export default function App(): React.ReactElement {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
+  const [sessionMenu, setSessionMenu] = useState<SessionMenuTarget | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null)
@@ -152,6 +155,10 @@ export default function App(): React.ReactElement {
   const contentRef = useRef<HTMLDivElement | null>(null)
   const stickBottom = useRef(true)
   const userScrolling = useRef(false)
+  const deletedSessions = useRef(new Set<string>())
+  const sessionListVersion = useRef(0)
+  const deletingRef = useRef<{ client: any; id: string } | null>(null)
+  const closeSessionMenu = useCallback(() => setSessionMenu(null), [])
 
   activeIdRef.current = activeId
 
@@ -167,9 +174,11 @@ export default function App(): React.ReactElement {
   const loadSessions = useCallback(async () => {
     const c = clientRef.current
     if (!c) return
+    const version = ++sessionListVersion.current
     try {
-      const r = await c.session.list()
-      setSessions(unwrap(r) ?? [])
+      const r = await c.session.list({ throwOnError: true })
+      if (c !== clientRef.current || version !== sessionListVersion.current) return
+      setSessions((unwrap(r) ?? []).filter((session: any) => !deletedSessions.current.has(session.id)))
     } catch (e) {
       console.error('list sessions failed', e)
     }
@@ -280,6 +289,8 @@ export default function App(): React.ReactElement {
   }, [flushEvents])
 
   const openSession = useCallback(async (id: string) => {
+    if (deletedSessions.current.has(id) || deletingRef.current?.id === id) return
+    closeSessionMenu()
     clearEvents()
     const epoch = sessionEpoch.current
     const version = revision.current
@@ -302,7 +313,51 @@ export default function App(): React.ReactElement {
     } catch (e) {
       console.error('open session failed', e)
     }
-  }, [clearEvents, flushEvents])
+  }, [clearEvents, flushEvents, closeSessionMenu])
+
+  const forgetSession = useCallback((id: string) => {
+    deletedSessions.current.add(id)
+    setSessions(previous => previous.filter(session => session.id !== id))
+    setSessionMenu(previous => previous?.id === id ? null : previous)
+    if (activeIdRef.current === id) {
+      clearEvents()
+      activeIdRef.current = null
+      setActiveId(null)
+      setMessages([])
+      setBusy(false)
+      setLastError(null)
+      stickBottom.current = true
+    }
+  }, [clearEvents])
+
+  const deleteSession = useCallback(async (id: string) => {
+    const c = clientRef.current
+    if (!c || deletingRef.current || deletedSessions.current.has(id)) return
+    const operation = { client: c, id }
+    deletingRef.current = operation
+    setDeletingId(id)
+    closeSessionMenu()
+    setLastError(null)
+    try {
+      const result = await c.session.delete({ path: { id } })
+      if (result.response?.status !== 404 && (result.error || unwrap(result) !== true)) {
+        throw new Error(result.error?.data?.message ?? result.error?.message ?? '服务器未能删除会话')
+      }
+      if (c !== clientRef.current) return
+      forgetSession(id)
+      await loadSessions()
+    } catch (error) {
+      if (c === clientRef.current && !deletedSessions.current.has(id)) {
+        const message = error instanceof Error ? error.message : String(error)
+        setLastError(`删除会话失败：${message}`)
+      }
+    } finally {
+      if (deletingRef.current === operation) {
+        deletingRef.current = null
+        setDeletingId(null)
+      }
+    }
+  }, [closeSessionMenu, forgetSession, loadSessions])
 
   useEffect(() => {
     let unsub: (() => void) | undefined
@@ -321,6 +376,10 @@ export default function App(): React.ReactElement {
 
     const client = createOpencodeClient({ baseUrl: url })
     clientRef.current = client
+    deletedSessions.current.clear()
+    deletingRef.current = null
+    setDeletingId(null)
+    closeSessionMenu()
     clearEvents()
     setSessions([])
     setMessages([])
@@ -389,7 +448,10 @@ export default function App(): React.ReactElement {
         }
         case 'session.created':
         case 'session.updated':
+          loadSessions()
+          break
         case 'session.deleted':
+          if (p.info?.id) forgetSession(p.info.id)
           loadSessions()
           break
       }
@@ -409,7 +471,9 @@ export default function App(): React.ReactElement {
     refreshMessages,
     enqueueEvent,
     clearEvents,
-    flushEvents
+    flushEvents,
+    closeSessionMenu,
+    forgetSession
   ])
 
   useEffect(() => {
@@ -520,6 +584,14 @@ export default function App(): React.ReactElement {
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden">
       <div className="app-bg" />
+      {sessionMenu ? (
+        <SessionContextMenu
+          target={sessionMenu}
+          disabled={deletingId != null || server?.status !== 'ready'}
+          onDelete={deleteSession}
+          onClose={closeSessionMenu}
+        />
+      ) : null}
 
       <header className="drag flex h-11 shrink-0 items-center justify-between px-3">
         <div className="flex items-center gap-2 text-xs text-white/70">
@@ -564,7 +636,7 @@ export default function App(): React.ReactElement {
           >
             + 新建会话
           </button>
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+          <div onScroll={closeSessionMenu} className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
             {sessions.length === 0 ? (
               <div className="px-2 py-6 text-center text-xs text-white/40">暂无会话</div>
             ) : (
@@ -572,14 +644,24 @@ export default function App(): React.ReactElement {
                 <button
                   key={s.id ?? i}
                   onClick={() => openSession(s.id)}
-                  className={`w-full truncate rounded-xl px-3 py-2 text-left text-[13px] transition ${
+                  disabled={deletingId === s.id}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    const bounds = event.currentTarget.getBoundingClientRect()
+                    setSessionMenu({
+                      id: s.id,
+                      x: event.clientX || bounds.left + 24,
+                      y: event.clientY || bounds.bottom
+                    })
+                  }}
+                  className={`w-full truncate rounded-xl px-3 py-2 text-left text-[13px] transition disabled:cursor-wait disabled:opacity-40 ${
                     s.id === activeId
                       ? 'glass-soft text-white'
                       : 'text-white/60 hover:bg-white/8 hover:text-white/90'
                   }`}
                   title={s.title}
                 >
-                  {s.title || '未命名会话'}
+                  {deletingId === s.id ? '正在删除…' : s.title || '未命名会话'}
                 </button>
               ))
             )}
