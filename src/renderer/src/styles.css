@@ -29,21 +29,27 @@ body {
 }
 
 .glass {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.035));
+  background: linear-gradient(135deg, rgba(255, 255, 255, calc(0.12 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(0.045 * var(--hui-panel-strength, .45))));
   backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
     0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
 .glass-soft {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, calc(0.1 * var(--hui-panel-strength, .45)));
   backdrop-filter: blur(16px) saturate(150%);
   -webkit-backdrop-filter: blur(16px) saturate(150%);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
+.hui-user-message {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, calc(0.18 * var(--hui-panel-strength, .45)));
+}
+.hui-settings-panel { backdrop-filter: blur(22px) saturate(160%); }
+.hui-transparency-range { accent-color: #8bdce8; cursor: pointer; }
 
 .drag {
   -webkit-app-region: drag;
@@ -230,16 +236,104 @@ body {
   font-size: 12.5px;
 }
 
+.hui-call-block {
+  box-sizing: border-box;
+  min-width: 0;
+  overflow: hidden;
+  interpolate-size: allow-keywords;
+  transition: width 460ms cubic-bezier(.35, .65, .2, 1), border-radius 460ms cubic-bezier(.35, .65, .2, 1), border-color 180ms ease-out;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, calc(0.12 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(0.045 * var(--hui-panel-strength, .45))));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+.hui-call-block.is-active {
+  width: 100%;
+  border-radius: 16px;
+}
+.hui-call-block.is-step {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+}
+.hui-call-block.is-step:hover {
+  border-color: rgba(185, 220, 245, 0.28);
+}
+.hui-call-block.is-step[data-expanded='true'] { width: 100%; }
+.hui-call-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+  width: auto;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: rgba(235, 243, 252, 0.9);
+  text-align: left;
+  cursor: pointer;
+}
+.hui-call-header:focus-visible { outline: 2px solid #9bdbe9; outline-offset: -3px; }
+.hui-call-block.is-step[data-expanded='true'] .hui-call-header { width: 100%; }
+.hui-call-chevron {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid #9bdbe9;
+  border-bottom: 1.5px solid #9bdbe9;
+  transform: rotate(-45deg);
+  transition: transform 460ms cubic-bezier(.22, 1, .36, 1);
+}
+.hui-call-block[data-expanded='true'] .hui-call-chevron { transform: rotate(45deg); }
+.hui-call-heading { flex: none; font-size: 12px; font-weight: 650; }
+.hui-call-meta { color: rgba(213, 226, 239, 0.55); font-size: 11px; }
+.hui-step-tool { --tool-accent: #8be0e7; color: var(--tool-accent); font-weight: 600; }
+.hui-call-state { color: rgba(213, 226, 239, 0.55); font-size: 11px; }
+.hui-call-block.is-step[data-expanded='true'] .hui-call-state { margin-left: auto; }
+.hui-call-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-width: 0;
+  contain: inline-size;
+  transition: grid-template-rows 500ms cubic-bezier(.35, .65, .2, 1);
+}
+.hui-call-block.is-step[data-expanded='false'] .hui-call-reveal { grid-template-rows: 0fr; }
+.hui-call-content {
+  min-height: 0;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 320ms ease-out, transform 460ms cubic-bezier(.35, .65, .2, 1);
+}
+.hui-call-block.is-active .hui-message-parts { padding: 12px 16px; }
+.hui-call-block.is-step .hui-message-parts { padding: 5px 12px 12px; }
+.hui-call-block.is-step[data-expanded='false'] .hui-call-content {
+  opacity: 0;
+  transform: translateY(-7px);
+  transition: opacity 300ms ease-in, transform 460ms cubic-bezier(.35, .65, .2, 1);
+}
+.hui-call-block.is-step .hui-message-parts > * {
+  transform: translateY(0);
+  transition: transform 460ms cubic-bezier(.35, .65, .2, 1);
+}
+.hui-call-block.is-step .hui-message-parts > :nth-child(n + 2) {
+  transition-delay: 45ms;
+}
+.hui-call-block.is-step[data-expanded='false'] .hui-message-parts > * {
+  transform: translateY(5px);
+  transition-duration: 320ms;
+  transition-delay: 0ms;
+}
+
 .hui-message-parts > .hui-tool-call + :not(.hui-tool-call),
-.hui-message-parts > :not(.hui-tool-call) + .hui-tool-call,
-.hui-reply-content > .hui-message-parts[data-last-part='tool'] + .hui-message-parts:not([data-first-part='tool']),
-.hui-reply-content > .hui-message-parts:not([data-last-part='tool']) + .hui-message-parts[data-first-part='tool'] {
+.hui-message-parts > :not(.hui-tool-call) + .hui-tool-call {
   margin-top: 12px;
 }
 
 .hui-tool-call {
   --tool-accent: #8be0e7;
-  --tool-surface: rgba(66, 191, 202, 0.12);
+  --tool-surface: rgba(66, 191, 202, calc(0.2 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(116, 222, 231, 0.3);
   box-sizing: border-box;
   align-self: flex-start;
@@ -249,43 +343,50 @@ body {
   padding: 8px 12px;
   border: 1px solid var(--tool-border);
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--tool-surface), rgba(255, 255, 255, 0.025));
+  background: linear-gradient(135deg, var(--tool-surface), rgba(255, 255, 255, calc(0.045 * var(--hui-panel-strength, .45))));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   font-size: 12px;
 }
-.hui-tool-call[data-tool-color='read'] {
+.hui-tool-call[data-tool-color='read'],
+.hui-step-tool[data-tool-color='read'] {
   --tool-accent: #a9dbff;
-  --tool-surface: rgba(102, 184, 245, 0.15);
+  --tool-surface: rgba(102, 184, 245, calc(0.25 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(150, 207, 255, 0.36);
 }
-.hui-tool-call[data-tool-color='write'] {
+.hui-tool-call[data-tool-color='write'],
+.hui-step-tool[data-tool-color='write'] {
   --tool-accent: #ffb66f;
-  --tool-surface: rgba(245, 139, 45, 0.15);
+  --tool-surface: rgba(245, 139, 45, calc(0.25 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(255, 172, 94, 0.36);
 }
-.hui-tool-call[data-tool-color='glob'] {
+.hui-tool-call[data-tool-color='glob'],
+.hui-step-tool[data-tool-color='glob'] {
   --tool-accent: #7b9fff;
-  --tool-surface: rgba(44, 78, 175, 0.22);
+  --tool-surface: rgba(44, 78, 175, calc(0.34 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(105, 140, 245, 0.38);
 }
-.hui-tool-call[data-tool-color='search'] {
+.hui-tool-call[data-tool-color='search'],
+.hui-step-tool[data-tool-color='search'] {
   --tool-accent: #88dfc7;
-  --tool-surface: rgba(53, 167, 133, 0.15);
+  --tool-surface: rgba(53, 167, 133, calc(0.25 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(119, 219, 186, 0.32);
 }
-.hui-tool-call[data-tool-color='shell'] {
+.hui-tool-call[data-tool-color='shell'],
+.hui-step-tool[data-tool-color='shell'] {
   --tool-accent: #ceb3ff;
-  --tool-surface: rgba(145, 101, 215, 0.16);
+  --tool-surface: rgba(145, 101, 215, calc(0.27 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(184, 143, 244, 0.34);
 }
-.hui-tool-call[data-tool-color='task'] {
+.hui-tool-call[data-tool-color='task'],
+.hui-step-tool[data-tool-color='task'] {
   --tool-accent: #f2a9d8;
-  --tool-surface: rgba(199, 91, 160, 0.15);
+  --tool-surface: rgba(199, 91, 160, calc(0.25 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(236, 150, 207, 0.32);
 }
-.hui-tool-call[data-tool-color='web'] {
+.hui-tool-call[data-tool-color='web'],
+.hui-step-tool[data-tool-color='web'] {
   --tool-accent: #b6df91;
-  --tool-surface: rgba(136, 180, 77, 0.14);
+  --tool-surface: rgba(136, 180, 77, calc(0.24 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(172, 215, 120, 0.32);
 }
 .hui-tool-summary {
@@ -345,7 +446,7 @@ body {
   scrollbar-gutter: stable;
 }
 
-/* The waiting chip and first answer are the same glass surface. */
+/* Keep the waiting transition on one node, then let each call own its surface. */
 .hui-reply-bubble {
   box-sizing: border-box;
   position: relative;
@@ -354,6 +455,8 @@ body {
   padding: 12px 16px;
   border-radius: 16px;
 }
+.hui-reply-bubble.is-catching-up,
+.hui-reply-bubble.is-ready { padding: 0; }
 .hui-reply-bubble.is-waiting,
 .hui-reply-bubble.is-label-exit,
 .hui-reply-bubble.is-condensing,
@@ -429,6 +532,11 @@ body {
   to { width: 82%; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .hui-call-block, .hui-call-reveal, .hui-call-content,
+  .hui-call-chevron, .hui-call-block.is-step .hui-message-parts > * {
+    transition-duration: 1ms;
+    transition-delay: 0ms;
+  }
   .hui-wait-orbit, .hui-wait-seed { animation: none; }
   .hui-reply-bubble.is-condensing,
   .hui-reply-bubble.is-unfolding,

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createOpencodeClient } from '@opencode-ai/sdk/client'
 import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
@@ -43,6 +43,20 @@ const toolColors: Record<string, string> = {
   websearch: 'web'
 }
 
+const displayToolName = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1)
+
+const defaultPanelTransparency = 55
+const readPanelTransparency = (): number => {
+  try {
+    const saved = localStorage.getItem('hui.panelTransparency')
+    if (saved !== null) {
+      const value = Number(saved)
+      if (Number.isFinite(value)) return Math.min(90, Math.max(0, value))
+    }
+  } catch { /* Keep the default when local storage is unavailable. */ }
+  return defaultPanelTransparency
+}
+
 const PartView = memo(function PartView({ part, completed, textLimit }: { part: any; completed: boolean; textLimit?: number }): React.ReactElement | null {
   const done = completed || part.time?.end != null
   let text: string = part.text ?? ''
@@ -70,7 +84,7 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
     const state = part.state ?? {}
     const toolName = String(part.tool ?? 'Tool')
     const toolColor = toolColors[toolName.toLowerCase()] ?? 'default'
-    const displayName = toolName.charAt(0).toUpperCase() + toolName.slice(1)
+    const displayName = displayToolName(toolName)
     return (
       <details className="hui-tool-call" data-tool-color={toolColor}>
         <summary className="hui-tool-summary">
@@ -129,12 +143,66 @@ const MessageView = memo(function MessageView({ msg, inReply = false, visibleCha
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
         className={`hui-message-parts flex min-w-0 max-w-[82%] flex-col gap-2 rounded-2xl px-4 py-3 ${
-          isUser ? 'border border-white/15 bg-white/12' : 'glass hui-message'
+          isUser ? 'hui-user-message' : 'glass hui-message'
         }`}
       >
         {parts}
       </div>
     </div>
+  )
+})
+
+const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleChars }: {
+  msg: MessageEntry
+  order: number
+  foldedByNext: boolean
+  visibleChars?: number
+}): React.ReactElement {
+  const panelId = useId()
+  const [expanded, setExpanded] = useState(!foldedByNext)
+  const previousFolded = useRef(foldedByNext)
+
+  // React only to a new call boundary, not to every streamed delta. A user
+  // may reopen an older block without the next update closing it again.
+  useLayoutEffect(() => {
+    if (previousFolded.current === foldedByNext) return
+    previousFolded.current = foldedByNext
+    setExpanded(!foldedByNext)
+  }, [foldedByNext])
+
+  const tools = new Map<string, { name: string; count: number; color: string }>()
+  if (foldedByNext) {
+    for (const part of msg.parts) {
+      if (part.type !== 'tool') continue
+      const name = String(part.tool ?? 'Tool')
+      const key = name.toLowerCase()
+      const existing = tools.get(key)
+      if (existing) existing.count++
+      else tools.set(key, { name: displayToolName(name), count: 1, color: toolColors[key] ?? 'default' })
+    }
+  }
+  return (
+    <section className={`hui-call-block ${foldedByNext ? 'is-step' : 'is-active'}`} data-expanded={expanded} data-message-id={msg.info?.id}>
+      {foldedByNext ? (
+        <button className="hui-call-header" type="button" aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
+          <span className="hui-call-chevron" aria-hidden="true" />
+          <span className="hui-call-heading">步骤 {order}</span>
+          {tools.size > 0 ? (
+            <span className="hui-call-meta">
+              调用了 {Array.from(tools, ([key, tool], index) => (
+                <span key={key} className="hui-step-tool" data-tool-color={tool.color}>{index > 0 ? '，' : ''}{tool.count}次 {tool.name}</span>
+              ))}
+            </span>
+          ) : null}
+          <span className="hui-call-state">{expanded ? '收起' : '展开'}</span>
+        </button>
+      ) : null}
+      <div className="hui-call-reveal" aria-hidden={foldedByNext && !expanded} inert={foldedByNext && !expanded}>
+        <div id={panelId} className="hui-call-content">
+          <MessageView msg={msg} inReply visibleChars={visibleChars} />
+        </div>
+      </div>
+    </section>
   )
 })
 
@@ -180,6 +248,9 @@ export default function App(): React.ReactElement {
   const [lastError, setLastError] = useState<string | null>(null)
   const [sessionMenu, setSessionMenu] = useState<SessionMenuTarget | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [panelTransparency, setPanelTransparency] = useState(readPanelTransparency)
+  const settingsRef = useRef<HTMLDivElement | null>(null)
 
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null)
@@ -201,6 +272,26 @@ export default function App(): React.ReactElement {
   const sessionListVersion = useRef(0)
   const deletingRef = useRef<{ client: any; id: string } | null>(null)
   const closeSessionMenu = useCallback(() => setSessionMenu(null), [])
+
+  useEffect(() => {
+    try { localStorage.setItem('hui.panelTransparency', String(panelTransparency)) } catch { /* Preview still works. */ }
+  }, [panelTransparency])
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    const onPointerDown = (event: PointerEvent): void => {
+      if (!settingsRef.current?.contains(event.target as Node)) setSettingsOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setSettingsOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [settingsOpen])
 
   activeIdRef.current = activeId
 
@@ -704,20 +795,14 @@ export default function App(): React.ReactElement {
   const appendReply = (waiting: boolean): void => {
     const visible = turnReplies.some((message) => message.parts.some(hasVisiblePart))
     if (!visible && !waiting) return
-    const replies = turnReplies
-    const textLength = replies.reduce((total, message) => total + message.parts.reduce((count, part) =>
-      count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0), 0)
+    const replies = turnReplies.filter(message => message.parts.some(hasVisiblePart))
+    const textLength = replies.at(-1)?.parts.reduce((count, part) =>
+      count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
     conversation.push(
       <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength}>
-        {(visibleChars) => {
-          let remaining = visibleChars
-          return replies.map((message, index) => {
-            const allowance = remaining
-            if (remaining !== undefined) remaining = Math.max(0, remaining - message.parts.reduce((total, part) =>
-              total + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0))
-            return <MessageView key={message.info?.id ?? index} msg={message} inReply visibleChars={allowance} />
-          })
-        }}
+        {(visibleChars) => replies.map((message, index) => (
+          <CallBlock key={message.info?.id ?? index} msg={message} order={index + 1} foldedByNext={index < replies.length - 1} visibleChars={index === replies.length - 1 ? visibleChars : undefined} />
+        ))}
       </ReplyPresentation>
     )
   }
@@ -737,7 +822,7 @@ export default function App(): React.ReactElement {
   }
 
   return (
-    <div className="relative flex h-screen w-screen flex-col overflow-hidden">
+    <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100 } as CSSProperties}>
       <div className="app-bg" />
       {sessionMenu ? (
         <SessionContextMenu
@@ -748,7 +833,7 @@ export default function App(): React.ReactElement {
         />
       ) : null}
 
-      <header className="drag flex h-11 shrink-0 items-center justify-between px-3">
+      <header className="drag relative z-30 flex h-11 shrink-0 items-center justify-between px-3">
         <div className="flex items-center gap-2 text-xs text-white/70">
           <span className="font-semibold tracking-wide text-white/90">OpencodeHUI</span>
           <span className={`h-2 w-2 rounded-full ${statusColor}`} />
@@ -761,6 +846,43 @@ export default function App(): React.ReactElement {
           </span>
         </div>
         <div className="no-drag flex items-center gap-1">
+          <div ref={settingsRef} className="relative">
+            <button
+              type="button"
+              aria-label="外观设置"
+              aria-expanded={settingsOpen}
+              aria-controls="hui-appearance-settings"
+              onClick={() => setSettingsOpen(value => !value)}
+              className="flex h-7 items-center gap-1 rounded-md px-2 text-xs text-white/70 hover:bg-white/10"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M10 2h4l.6 2.3 1.8.8 2.1-1.2 2.8 2.8-1.2 2.1.8 1.8 2.3.6v4l-2.3.6-.8 1.8 1.2 2.1-2.8 2.8-2.1-1.2-1.8.8L14 22h-4l-.6-2.3-1.8-.8-2.1 1.2-2.8-2.8 1.2-2.1-.8-1.8L1 14v-4l2.3-.6.8-1.8-1.2-2.1 2.8-2.8 2.1 1.2 1.8-.8L10 2Z" />
+              </svg>
+              设置
+            </button>
+            {settingsOpen ? (
+              <div id="hui-appearance-settings" className="glass hui-settings-panel absolute right-0 top-9 w-64 rounded-xl p-4 shadow-2xl">
+                <div className="mb-3 text-sm font-semibold text-white/90">外观设置</div>
+                <label htmlFor="hui-panel-transparency" className="flex justify-between text-xs text-white/75">
+                  <span>面板透明度</span><span>{panelTransparency}%</span>
+                </label>
+                <input
+                  id="hui-panel-transparency"
+                  type="range"
+                  min="0"
+                  max="90"
+                  value={panelTransparency}
+                  onChange={(event) => setPanelTransparency(Number(event.target.value))}
+                  className="hui-transparency-range mt-3 w-full"
+                />
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span className="text-[11px] text-white/50">只调整底色，文字保持清晰</span>
+                  <button type="button" onClick={() => setPanelTransparency(defaultPanelTransparency)} className="shrink-0 text-[11px] text-cyan-200/80 hover:text-cyan-100">重置</button>
+                </div>
+              </div>
+            ) : null}
+          </div>
           <button
             onClick={() => window.api.window.minimize()}
             className="grid h-7 w-9 place-items-center rounded-md text-white/70 hover:bg-white/10"

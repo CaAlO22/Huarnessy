@@ -55,10 +55,11 @@ export function ReplyPresentation({ waiting, textLength = 0, children }: {
   }, [phase])
 
   const showWait = phase === 'waiting' || phase === 'label-exit' || phase === 'condensing' || phase === 'dot-exit'
+  const showSurface = phase !== 'catching-up' && phase !== 'ready'
   return (
     <div className="hui-reply-stage">
       <div
-        className={`glass hui-message hui-reply-bubble is-${phase}`}
+        className={`${showSurface ? 'glass ' : ''}hui-message hui-reply-bubble is-${phase}`}
         onAnimationEnd={(event) => {
           if (event.target !== event.currentTarget) return
           if (phase === 'condensing' && event.animationName === 'hui-reply-condense') setPhase('dot-exit')
@@ -87,7 +88,7 @@ export function ReplyPresentation({ waiting, textLength = 0, children }: {
             >等待回复</span>
           </div>
         ) : null}
-        <div className="hui-reply-content flex min-w-0 flex-col gap-2" aria-hidden={showWait || phase === 'unfolding' || undefined}>
+        <div className="hui-reply-content flex min-w-0 flex-col gap-3" aria-hidden={showWait || phase === 'unfolding' || undefined}>
           {typeof children === 'function' ? children(phase === 'catching-up' ? visibleChars ?? 0 : phase === 'ready' ? undefined : 0) : children}
         </div>
       </div>
