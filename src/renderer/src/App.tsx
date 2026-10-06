@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createOpencodeClient } from '@opencode-ai/sdk/client'
 import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
+import { sameWorkspace } from './workspace-path'
+import { ReplyPresentation, hasVisiblePart } from './ReplyPresentation'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
 
 interface ServerInfo {
@@ -87,8 +89,9 @@ const PartView = memo(function PartView({ part, completed }: { part: any; comple
   return null
 })
 
-const MessageView = memo(function MessageView({ msg }: { msg: MessageEntry }): React.ReactElement {
+const MessageView = memo(function MessageView({ msg }: { msg: MessageEntry }): React.ReactElement | null {
   const isUser = msg.info?.role === 'user'
+  if (!msg.parts.some(hasVisiblePart)) return null
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -132,11 +135,14 @@ function Select({
 
 export default function App(): React.ReactElement {
   const [server, setServer] = useState<ServerInfo | null>(null)
+  const [workspace, setWorkspace] = useState<string | null>(null)
+  const [choosingWorkspace, setChoosingWorkspace] = useState(false)
   const [sessions, setSessions] = useState<any[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<MessageEntry[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const beforeRequestUserId = useRef<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
   const [sessionMenu, setSessionMenu] = useState<SessionMenuTarget | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -147,6 +153,8 @@ export default function App(): React.ReactElement {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
 
   const clientRef = useRef<any>(null)
+  const workspaceRef = useRef<string | null>(null)
+  const choosingWorkspaceRef = useRef(false)
   const clientBase = useRef<string | null>(null)
   const esRef = useRef<EventSource | null>(null)
   const activeIdRef = useRef<string | null>(null)
@@ -173,12 +181,14 @@ export default function App(): React.ReactElement {
 
   const loadSessions = useCallback(async () => {
     const c = clientRef.current
-    if (!c) return
+    const directory = workspaceRef.current
+    if (!c || !directory) return
     const version = ++sessionListVersion.current
     try {
-      const r = await c.session.list({ throwOnError: true })
+      const r = await c.session.list({ query: { directory }, throwOnError: true })
       if (c !== clientRef.current || version !== sessionListVersion.current) return
-      setSessions((unwrap(r) ?? []).filter((session: any) => !deletedSessions.current.has(session.id)))
+      setSessions((unwrap(r) ?? []).filter((session: any) => sameWorkspace(session.directory, directory)
+        && !deletedSessions.current.has(session.id)))
     } catch (e) {
       console.error('list sessions failed', e)
     }
@@ -193,6 +203,7 @@ export default function App(): React.ReactElement {
         c.app.agents(),
         c.config.get()
       ])
+      if (c !== clientRef.current) return
 
       const list: ModelOption[] = []
       const pdata = unwrap(provRes) ?? {}
@@ -289,7 +300,8 @@ export default function App(): React.ReactElement {
   }, [flushEvents])
 
   const openSession = useCallback(async (id: string) => {
-    if (deletedSessions.current.has(id) || deletingRef.current?.id === id) return
+    const c = clientRef.current
+    if (!c || deletedSessions.current.has(id) || deletingRef.current?.id === id) return
     closeSessionMenu()
     clearEvents()
     const epoch = sessionEpoch.current
@@ -297,8 +309,6 @@ export default function App(): React.ReactElement {
     setActiveId(id)
     activeIdRef.current = id
     setMessages([])
-    const c = clientRef.current
-    if (!c) return
     try {
       const r = await c.session.messages({ path: { id } })
       if (epoch !== sessionEpoch.current || id !== activeIdRef.current) return
@@ -359,6 +369,63 @@ export default function App(): React.ReactElement {
     }
   }, [closeSessionMenu, forgetSession, loadSessions])
 
+  const resetWorkspaceView = useCallback(() => {
+    // Invalidate the old client immediately, before React reconnects the next
+    // workspace. Late requests and already-queued SSE handlers become inert.
+    clientRef.current = null
+    clientBase.current = null
+    esRef.current?.close()
+    esRef.current = null
+    clearEvents()
+    closeSessionMenu()
+    sessionListVersion.current++
+    deletedSessions.current.clear()
+    deletingRef.current = null
+    activeIdRef.current = null
+    setDeletingId(null)
+    setActiveId(null)
+    setSessions([])
+    setMessages([])
+    setModels([])
+    setAgents([])
+    setSelectedModel(null)
+    setSelectedAgent(null)
+    setBusy(false)
+    setInput('')
+    setLastError(null)
+    stickBottom.current = true
+  }, [clearEvents, closeSessionMenu])
+
+  const chooseWorkspace = useCallback(async () => {
+    if (choosingWorkspaceRef.current) return
+    choosingWorkspaceRef.current = true
+    setChoosingWorkspace(true)
+    try {
+      const next = await window.api.chooseWorkspacePath()
+      if (!next || sameWorkspace(next, workspaceRef.current)) return
+      resetWorkspaceView()
+      workspaceRef.current = next
+      setWorkspace(next)
+    } catch (error) {
+      setLastError(`切换工作空间失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      choosingWorkspaceRef.current = false
+      setChoosingWorkspace(false)
+    }
+  }, [resetWorkspaceView])
+
+  useEffect(() => {
+    let alive = true
+    window.api.getWorkspacePath().then(directory => {
+      if (!alive) return
+      workspaceRef.current = directory
+      setWorkspace(directory)
+    }).catch(error => {
+      if (alive) setLastError(`读取工作空间失败：${String(error)}`)
+    })
+    return () => { alive = false }
+  }, [])
+
   useEffect(() => {
     let unsub: (() => void) | undefined
     window.api.getServerInfo().then((info) => {
@@ -369,38 +436,35 @@ export default function App(): React.ReactElement {
   }, [])
 
   useEffect(() => {
-    if (server?.status !== 'ready' || !server.url) return
+    if (server?.status !== 'ready' || !server.url || !workspace) return
     const url = server.url
-    if (clientBase.current === url) return
-    clientBase.current = url
+    const context = `${url}\n${workspace}`
+    if (clientBase.current === context) return
+    resetWorkspaceView()
+    clientBase.current = context
 
-    const client = createOpencodeClient({ baseUrl: url })
+    const client = createOpencodeClient({ baseUrl: url, directory: workspace })
     clientRef.current = client
-    deletedSessions.current.clear()
-    deletingRef.current = null
-    setDeletingId(null)
-    closeSessionMenu()
-    clearEvents()
-    setSessions([])
-    setMessages([])
-    setModels([])
-    setAgents([])
-    setActiveId(null)
-    activeIdRef.current = null
     loadSessions()
     loadConfig()
 
-    const es = new EventSource(`${url}/event`)
+    const eventUrl = new URL(`${url}/event`)
+    eventUrl.searchParams.set('directory', workspace)
+    const es = new EventSource(eventUrl.href)
     esRef.current = es
     es.onmessage = (e) => {
+      if (clientRef.current !== client) return
       let evt: any
       try {
         evt = JSON.parse(e.data)
       } catch {
         return
       }
+      if (evt?.directory && !sameWorkspace(evt.directory, workspace)) return
+      evt = evt?.payload ?? evt
       const t = evt?.type
       const p = evt?.properties ?? {}
+      if (p.info?.directory && !sameWorkspace(p.info.directory, workspace)) return
       const active = activeIdRef.current
 
       switch (t) {
@@ -430,7 +494,7 @@ export default function App(): React.ReactElement {
           break
         }
         case 'session.idle': {
-          if (!active || !p.sessionID || p.sessionID === active) {
+          if (active && p.sessionID === active) {
             flushEvents()
             setBusy(false)
             refreshMessages()
@@ -438,7 +502,7 @@ export default function App(): React.ReactElement {
           break
         }
         case 'session.error': {
-          if (!active || !p.sessionID || p.sessionID === active) {
+          if (active && p.sessionID === active) {
             const message =
               p?.error?.data?.message ?? p?.error?.message ?? p?.error?.name ?? '未知错误'
             setLastError(String(message))
@@ -462,10 +526,12 @@ export default function App(): React.ReactElement {
       clearEvents()
       if (esRef.current === es) esRef.current = null
       clientBase.current = null
+      if (clientRef.current === client) clientRef.current = null
     }
   }, [
     server?.status,
     server?.url,
+    workspace,
     loadSessions,
     loadConfig,
     refreshMessages,
@@ -473,26 +539,23 @@ export default function App(): React.ReactElement {
     clearEvents,
     flushEvents,
     closeSessionMenu,
-    forgetSession
+    forgetSession,
+    resetWorkspaceView
   ])
 
   useEffect(() => {
     const el = scrollRef.current
     const content = contentRef.current
     if (!el || !content) return
-    let raf: number | null = null
     const observer = new ResizeObserver(() => {
-      if (!stickBottom.current || raf != null) return
-      raf = requestAnimationFrame(() => {
-        raf = null
-        if (stickBottom.current) el.scrollTop = el.scrollHeight
-      })
+      // ResizeObserver runs after layout and before paint. Deferring again to
+      // rAF paints one frame at the old scroll position, then visibly jumps.
+      if (stickBottom.current) el.scrollTop = el.scrollHeight
     })
     // Worker formatting can change height even when the message text is unchanged.
     observer.observe(content)
     return () => {
       observer.disconnect()
-      if (raf != null) cancelAnimationFrame(raf)
     }
   }, [])
 
@@ -517,60 +580,65 @@ export default function App(): React.ReactElement {
   const newSession = async (): Promise<void> => {
     const c = clientRef.current
     if (!c) return
-    const r = await c.session.create({ body: { title: 'New Session' } })
-    const s = unwrap(r)
-    await loadSessions()
-    if (s?.id) openSession(s.id)
+    try {
+      const r = await c.session.create({ body: { title: 'New Session' }, throwOnError: true })
+      if (c !== clientRef.current) return
+      const s = unwrap(r)
+      await loadSessions()
+      if (c === clientRef.current && s?.id) openSession(s.id)
+    } catch (error) {
+      if (c === clientRef.current) setLastError(`新建会话失败：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   const send = async (): Promise<void> => {
     const text = input.trim()
     const c = clientRef.current
-    if (!text || !c || !server?.url) return
-
-    let id = activeIdRef.current
-    if (!id) {
-      const r = await c.session.create({ body: { title: text.slice(0, 48) } })
-      const s = unwrap(r)
-      id = s?.id ?? null
-      if (id) {
-        clearEvents()
-        setActiveId(id)
-        activeIdRef.current = id
-        setMessages([])
-        await loadSessions()
-      }
-    }
-    if (!id) return
-
-    setInput('')
-    setBusy(true)
-    setLastError(null)
-    stickBottom.current = true
+    if (!text || !c || !server?.url || busy) return
 
     const body: any = { parts: [{ type: 'text', text }] }
     if (selectedModel) body.model = selectedModel
     if (selectedAgent) body.agent = selectedAgent
 
+    beforeRequestUserId.current = [...messages].reverse().find((message) => message.info?.role === 'user')?.info?.id ?? null
+    setBusy(true)
+    setLastError(null)
+    stickBottom.current = true
+
     try {
-      await fetch(`${server.url}/session/${id}/prompt_async`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      })
+      let id = activeIdRef.current
+      if (!id) {
+        const r = await c.session.create({ body: { title: text.slice(0, 48) }, throwOnError: true })
+        if (c !== clientRef.current) return
+        const s = unwrap(r)
+        id = s?.id ?? null
+        if (id) {
+          clearEvents()
+          setActiveId(id)
+          activeIdRef.current = id
+          setMessages([])
+          await loadSessions()
+        }
+      }
+      if (c !== clientRef.current) return
+      if (!id) { setBusy(false); return }
+      setInput('')
+      await c.session.promptAsync({ path: { id }, body, throwOnError: true })
     } catch (e) {
-      console.error('prompt failed', e)
+      if (c !== clientRef.current) return
+      setLastError(`发送失败：${e instanceof Error ? e.message : String(e)}`)
       setBusy(false)
     }
   }
 
   const abort = async (): Promise<void> => {
     const id = activeIdRef.current
-    if (!id || !server?.url) return
+    const c = clientRef.current
+    if (!id || !c) return
     try {
-      await fetch(`${server.url}/session/${id}/abort`, { method: 'POST' })
+      await c.session.abort({ path: { id }, throwOnError: true })
     } catch (e) {
-      console.error('abort failed', e)
+      if (c === clientRef.current) setLastError(`停止失败：${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -580,6 +648,14 @@ export default function App(): React.ReactElement {
       : server?.status === 'error'
         ? 'bg-rose-400'
         : 'bg-amber-400'
+
+  let lastUserIndex = messages.length - 1
+  while (lastUserIndex >= 0 && messages[lastUserIndex].info?.role !== 'user') lastUserIndex--
+  const awaitingUserEcho = busy && (messages[lastUserIndex]?.info?.id ?? null) === beforeRequestUserId.current
+  const replyStart = awaitingUserEcho ? messages.length : lastUserIndex + 1
+  const earlierMessages = messages.slice(0, replyStart)
+  const replyMessages = messages.slice(replyStart)
+  const waitingForReply = busy && !replyMessages.some((message) => message.parts.some(hasVisiblePart))
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden">
@@ -631,7 +707,7 @@ export default function App(): React.ReactElement {
         <aside className="glass flex w-64 shrink-0 flex-col rounded-2xl p-3">
           <button
             onClick={newSession}
-            disabled={server?.status !== 'ready'}
+            disabled={server?.status !== 'ready' || !workspace}
             className="mb-3 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white/90 transition hover:bg-white/16 disabled:opacity-40"
           >
             + 新建会话
@@ -677,6 +753,23 @@ export default function App(): React.ReactElement {
               </button>
             </div>
           ) : null}
+          <div className="mt-3 shrink-0 border-t border-white/10 pt-3">
+            <button
+              type="button"
+              onClick={chooseWorkspace}
+              disabled={!workspace || choosingWorkspace}
+              className="mb-3 flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/8 px-3 py-2 text-[13px] text-white/80 transition hover:bg-white/14 disabled:cursor-wait disabled:opacity-40"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                <path d="M3 7V5h6l2 2h10v3M3 7v13h16l3-10H7l-4 10" />
+              </svg>
+              {choosingWorkspace ? '正在选择…' : '切换工作空间'}
+            </button>
+            <div className="mb-1 text-[10px] text-white/40">当前工作空间</div>
+            <div aria-label="当前工作空间" title={workspace ?? ''} className="truncate font-mono text-[11px] text-white/65">
+              {workspace ?? '正在读取…'}
+            </div>
+          </div>
         </aside>
 
         <main className="glass flex min-w-0 flex-1 flex-col rounded-2xl">
@@ -696,20 +789,19 @@ export default function App(): React.ReactElement {
             }}
             className="hui-chat-scroll min-h-0 flex-1 overflow-y-auto p-5"
           >
-            <div ref={contentRef} className={`space-y-4 ${messages.length === 0 ? 'h-full' : ''}`}>
-              {messages.length === 0 ? (
+            <div ref={contentRef} className={`space-y-4 ${messages.length === 0 && !busy ? 'h-full' : ''}`}>
+              {messages.length === 0 && !busy ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
                   <div className="text-lg font-medium text-white/60">开始一段对话</div>
                   <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
                 </div>
               ) : (
-                messages.map((m, i) => <MessageView key={m.info?.id ?? i} msg={m} />)
+                earlierMessages.map((m, i) => <MessageView key={m.info?.id ?? i} msg={m} />)
               )}
-              {busy ? (
-                <div className="flex items-center gap-2 pl-1 text-xs text-white/50">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
-                  正在思考…
-                </div>
+              {messages.length > 0 || busy ? (
+                <ReplyPresentation key={activeId ?? 'initial-reply'} waiting={waitingForReply}>
+                  {replyMessages.map((m, i) => <MessageView key={m.info?.id ?? i} msg={m} />)}
+                </ReplyPresentation>
               ) : null}
             </div>
           </div>
@@ -742,7 +834,7 @@ export default function App(): React.ReactElement {
                     ? '输入消息… (Enter 发送 / Shift+Enter 换行)'
                     : '等待 opencode 启动…'
                 }
-                disabled={server?.status !== 'ready'}
+                disabled={server?.status !== 'ready' || !workspace}
                 className="max-h-40 min-h-[22px] w-full resize-none bg-transparent px-3 py-1.5 text-[13.5px] text-white/90 outline-none placeholder:text-white/35 disabled:opacity-50"
               />
               <div className="mt-1 flex items-center gap-2 px-1">
@@ -797,7 +889,7 @@ export default function App(): React.ReactElement {
                 ) : (
                   <button
                     onClick={() => void send()}
-                    disabled={!input.trim() || server?.status !== 'ready'}
+                    disabled={!input.trim() || server?.status !== 'ready' || !workspace}
                     className="rounded-xl bg-white/90 px-4 py-2 text-[13px] font-semibold text-slate-900 transition hover:bg-white disabled:opacity-40"
                   >
                     发送

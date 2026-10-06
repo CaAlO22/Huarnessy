@@ -44,16 +44,19 @@
 OpencodeHUI/
 ├─ electron.vite.config.ts     # electron-vite 配置（@ 别名、React、Tailwind 插件）
 ├─ tsconfig.json               # TS 配置（ES2022 / Bundler / react-jsx / paths:@）
-├─ package.json                # 脚本：dev / build / preview / typecheck / test:stream
+├─ package.json                # 脚本：dev / build / preview / typecheck / test:stream / test:workspace
 ├─ .vscode/launch.json         # F5 调试（Main / Renderer / 复合 Debug All）
 ├─ scripts/
 │  ├─ stream-benchmark.mjs     # 启动开发服务器或生产页面及 Electron 测试进程
 │  ├─ stream-benchmark.cjs     # 流式性能测量与显示/事件/滚动回归断言
-│  └─ stream-benchmark-preload.cjs # 页面加载前注入假内核，无真实模型请求
+│  ├─ stream-benchmark-preload.cjs # 页面加载前注入假内核，无真实模型请求
+│  ├─ workspace-regressions.cjs # 工作空间切换、目录作用域及迟到请求回归
+│  └─ workspace-store.test.mjs # 工作空间持久化、路径验证与目录比较测试
 └─ src/
    ├─ main/
    │  ├─ index.ts              # Electron 主进程：创建无边框窗口、IPC、调试端口开关
-   │  └─ opencode-server.ts    # 内核生命周期：选端口、净化 env、spawn、健康检查
+   │  ├─ opencode-server.ts    # 内核生命周期：选端口、净化 env、spawn、健康检查
+   │  └─ workspace.ts         # 工作空间路径验证、持久化和启动回退
    ├─ preload/
    │  └─ index.ts              # contextBridge 暴露 window.api
    └─ renderer/
@@ -62,6 +65,7 @@ OpencodeHUI/
          ├─ main.tsx           # 挂载 + 引入 katex/highlight 的 CSS
          ├─ App.tsx            # 全部界面与事件处理（核心文件）
          ├─ SessionContextMenu.tsx # 会话右键菜单、定位、关闭与焦点管理
+         ├─ workspace-path.ts # 工作空间目录精确比较，兼容 Windows 大小写与斜杠
          ├─ stream-state.ts   # 按 SSE 顺序归并消息事件
          ├─ StreamingMarkdown.tsx # 即时文本展示、格式化调度与 DOM 复用
          ├─ markdown.worker.ts # Markdown / KaTeX / 高亮计算与有界缓存
@@ -73,8 +77,8 @@ OpencodeHUI/
 
 **进程分工**
 
-- **Main**：拉起/回收内核、创建窗口、IPC 转发；不参与业务逻辑。
-- **Preload**：`contextBridge` 暴露 `getServerInfo / restartServer / onServerStatus / window.{minimize,maximize,close}`。
+- **Main**：拉起/回收内核、创建窗口、IPC 转发、原生工作空间文件夹选择与本地设置保存。
+- **Preload**：`contextBridge` 暴露 `getWorkspacePath / chooseWorkspacePath / getServerInfo / restartServer / onServerStatus / window.{minimize,maximize,close}`。
 - **Renderer**：直接连接本地内核的 REST 与 SSE，管理消息状态、交互和 DOM 更新。
 - **Markdown Worker**：承担 Markdown 解析、公式排版、代码高亮与格式化缓存，不负责消息接收或发送。
 
@@ -89,6 +93,7 @@ npm run typecheck    # tsc --noEmit
 npm run build        # 生产构建（out/）
 npm run preview      # 运行生产构建
 npm run test:stream  # 假内核驱动的 Electron 流式性能与功能回归
+npm run test:workspace # 工作空间设置与目录隔离的单元验证
 ```
 
 - **VSCode 调试**：F5 → `Debug All`（Main 用 node 调试、Renderer 用 chrome 9222 attach）。
@@ -114,12 +119,12 @@ Markdown / KaTeX / 高亮由独立 Worker 计算；格式化结果在下一绘�
 
 1. `stream-state.ts` 对 delta、部件快照、消息元信息与删除事件按接收顺序归并。同帧只复制一次消息数组及受影响部件数组，保持未变化消息的引用。
 2. 会话切换、连接清理时取消待提交事件。REST 返回结果检查会话代次及事件版本，避免覆盖更新中的 SSE 状态。
-3. `StreamingMarkdown.tsx` 立即展示已收到的新文本；格式化尚未完成的后缀临时以原始文本显示。没有打字机、字符播放队列或固定等待计时器。
+3. `StreamingMarkdown.tsx` 立即展示已收到的新文本；格式化尚未完成的后缀临时以原始文本显示，并在 `useLayoutEffect` 中接到当前段落、列表项或开放代码块的原位置，继承该处字体和行高。Worker 的 `tailKind` 指示续写位置；新段落使用独立文本块。没有打字机、字符播放队列或固定等待计时器。
 4. `markdown.worker.ts` 在 Worker 中解析完整 Markdown，保留跨段引用链接、列表、表格语义；复用 unified 处理器及高亮器。未闭合围栏暂不高亮。
 5. 段落、列表项、代码块的格式化结果使用有界缓存（最多 512 项、约 8,000,000 个序列化字符的预算）。旧列表项及表格行保留 DOM；跨 Worker 消息仅传变化的片段，已有片段通过 ID 复用。
 6. 格式化请求最多一个执行中，每个部件只保留最新待执行快照；格式化结果每帧最多应用一次。格式化计算不阻塞文字显示，也不堆积历史快照。
 7. 原始 HTML 保持转义；链接沿用 ReactMarkdown 的安全 URL 转换。渲染进程只插入本项目流水线生成的 HTML。
-8. 自动吸底用 ResizeObserver + rAF 同时跟踪文字增长和异步排版的尺寸变化，并区分用户滚动与排版引起的滚动事件。消息气泡不重复执行父面板已经提供的背景模糊。
+8. 自动吸底在 ResizeObserver 的布局后、绘制前阶段更新滚动位置，同时跟踪文字增长和异步排版，并区分用户滚动与排版引起的滚动事件。此处不再另排下一帧，避免先显示旧位置再跳到底部。助手气泡宽度固定为可用宽度的 82%，滚动区预留滚动条位置；消息气泡不重复执行父面板已经提供的背景模糊。
 9. Vite 使用 `worker` 导出条件，确保 Markdown 的字符实体解码不调用 `document`；预优化 Worker 依赖，避免第一次生成回复时触发依赖发现后的整页重载。
 
 ### 回归验证
@@ -130,6 +135,7 @@ npm run build
 npm run test:stream                  # Electron + Vite 开发模式
 npm run test:stream -- --large        # 约 1.7 万字列表、2 万字段落、近 3 万字符代码
 npm run test:stream -- --production   # 直接加载 out/renderer/index.html，验证 file:// Worker
+npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与代码续写
 ```
 
 测试内核为假的，不创建真实会话、不请求模型。覆盖流式列表/长段落/多段落/代码、公式、高亮、自动吸底，以及快照与 delta 顺序、删除、会话切换、引用链接、HTML 转义、安全 URL、未知代码语言。测试打印输出耗时、帧间隔、主线程长任务、前后段处理耗时；机器负载不同会改变数值，不应把一次测试当成所有输入的性能保证。
@@ -152,6 +158,21 @@ npm run test:stream -- --production   # 直接加载 out/renderer/index.html，�
 最终生产测试通过 13 项功能回归断言，除上述内容外，还覆盖嵌套代码围栏闭合前后高亮、用户向上滚动后保持位置、回到底部后恢复自动跟随。测试中的输出过程耗时包含发送计时器和末尾等待，不是单次解析耗时，也不是模型生成速度。
 
 当前测试为离线假内核验证；真实模型的网络延迟、分组大小与生成速度未由这些数据证明。后续如遇不同输入的卡顿，应保留输入与运行模式，先运行同类复现并测量主线程长任务，再判断是否需要调整。
+
+### 流式气泡抖动修复（2026-10-06）
+
+先前将原始后缀放在已格式化段落外，Worker 返回后又把它合并到段落内。这会反复制造额外一行，再撤掉这一行；气泡随内容改变宽度，加上吸底推迟到下一绘制帧，会进一步放大高度和滚动位置的跳动。
+
+固定输入的开发模式复现中，短回复宽度变化约 595px；文字持续追加时，气泡高度下降 6 次，滚动位置后退 6 次。修复后同类输入的宽度变化、高度下降、滚动后退均为 0；代码续写也验证了当前行、真实换行与空行不会被丢失或移位。这些断言已加入 `test:stream`，且可以单独通过 `--layout-only` 执行；`--record-layout` 只记录数据，不做布局断言，便于对比旧实现。
+
+注意：未闭合代码围栏的 HTML 会补一个末尾换行。续写同一行时移除这个合成换行，已有源码换行则保留；Worker 替换宿主 DOM 后，在绘制前重新挂载纯文本后缀。不要把后缀重新放到段落外，也不要用固定高度或滚动动画掩盖排版跳动。标题、表格、公式等结构在真正形成时仍可能合理改变高度，测试针对的是无结构变化的连续文字反复收缩。
+
+### 回复等待与入场动效
+
+- `ReplyPresentation.tsx` 在发送后显示紧凑的“等待回复”玻璃条，圆点通过 CSS 缩放、圆环、旋转和颜色变化呈现等待状态；收到用户消息回显前也能立即显示。
+- `MessageView` 不为空正文、空思考或协议记账部件创建气泡。首条正文、思考、工具、文件或重试内容到来时，等待条用 160ms 的缩小淡出动效退出，正文同时即时呈现；后续 delta 不重新触发动效，也不等待动画完成。
+- 等待状态以当前一轮消息的可见内容判断，历史回复不能消除新请求的等待条。退出层使用绝对定位，不随动画反复改变消息高度；支持系统减少动态效果设置。错误、停止后的 idle、会话及工作空间切换会清理等待状态。
+- `scripts/reply-ui-regressions.cjs` 随 `test:stream` 验证紧凑等待条、空消息隐藏、首条思考过渡、后续增量不重放动画、下一轮等待及错误清理。测试使用假内核。
 
 ---
 
@@ -181,7 +202,20 @@ npm run test:stream -- --production   # 直接加载 out/renderer/index.html，�
 
 ---
 
-## 8. 会话列表与删除（2026-10-06）
+## 8. 会话列表、工作空间与删除（2026-10-06）
+
+### 工作空间
+
+- 左侧底部显示当前工作空间完整路径，超长时截断显示，鼠标悬停可查看完整值；上方的“切换工作空间”打开原生文件夹选择对话框。取消选择或选择相同目录保留当前对话。
+- 初次启动使用进程工作目录；后续优先恢复 Electron `userData/workspace.json` 中的目录。主进程验证目录存在且为文件夹，保存真实绝对路径；设置损坏或目录已删除时回退到启动目录。
+- SDK 客户端通过 `createOpencodeClient({ baseUrl, directory })` 建立目录上下文；会话列表另显式传入 `query.directory`，并按会话的 `directory` 再做精确过滤。不同文件夹分别隔离，即使位于同一个 Git 仓库或属于父子目录也不合并。
+- 新建、历史读取、发送、停止和删除均使用当前目录的 SDK 客户端；SSE 连接使用 `/event?directory=...`。不要重新引入未带目录的原生发送/停止请求。
+- 切换时立即关闭旧 SSE、使旧客户端失效，清理会话、消息、待提交增量、输入草稿、忙碌状态及目录配置，再加载新目录会话和配置。旧客户端返回的列表、历史、配置、新建结果及删除结果不能更新新工作空间。
+- 兼容普通 SSE 事件和带 `directory/payload` 的事件封装；忽略其他目录的封装事件及会话生命周期事件。Windows 路径比较兼容大小写、斜杠和末尾分隔符，非 Windows 路径保持大小写区别。
+- 切换工作空间不重启内核，也不主动中断原工作空间中已经发送的模型任务；切回后可以重新选择对应会话查看历史。
+- `npm run test:workspace` 验证设置保存、恢复、失效回退和目录比较；`npm run test:stream` 增加 16 项工作空间界面与请求回归，使用假内核验证目录隔离、取消/失败选择、Unicode 路径、各类请求的目录参数，以及迟到的列表、历史和新建结果。
+
+### 会话删除
 
 - 在左侧会话条目上右键，点击“删除会话”，通过 SDK 的 `session.delete({ path: { id } })` 调用 `DELETE /session/{id}`。右键不改变当前选中的会话。
 - 菜单限制在窗口可视范围内；点击外部、按 Escape/Tab、滚动会话列表、调整窗口大小或窗口失焦时关闭。
@@ -206,6 +240,10 @@ npm run test:stream -- --production   # 直接加载 out/renderer/index.html，�
 | 想改什么 | 去哪里 |
 |---|---|
 | 界面 / SSE 接收 / 会话切换 / 自动滚动 | `src/renderer/src/App.tsx` |
+| 工作空间路径显示 / 切换 / 目录请求上下文 | `src/renderer/src/App.tsx` |
+| 原生文件夹选择 / 工作空间设置 IPC | `src/main/index.ts`、`src/preload/index.ts` |
+| 工作空间持久化与路径验证 | `src/main/workspace.ts` |
+| 工作空间路径比较 | `src/renderer/src/workspace-path.ts` |
 | 会话右键菜单 / 菜单定位与关闭 | `src/renderer/src/SessionContextMenu.tsx` |
 | 会话删除请求 / 删除后的状态清理 | `src/renderer/src/App.tsx` 的 `deleteSession`、`forgetSession` |
 | 有序消息归并 / delta 与快照更新 | `src/renderer/src/stream-state.ts` |

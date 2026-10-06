@@ -7,7 +7,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:stream": "node scripts/stream-benchmark.mjs"
+    "test:stream": "node scripts/stream-benchmark.mjs",
+    "test:workspace": "node --test scripts/workspace-store.test.mjs"
   },
   "keywords": [],
   "author": "",

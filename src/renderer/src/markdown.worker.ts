@@ -126,6 +126,11 @@ self.onmessage = (event: MessageEvent<MarkdownRequest>) => {
   const request = event.data
   try {
     const tree = parser.parse(request.text)
+    let tailBlock: MarkdownNode | undefined = tree
+    while (tailBlock && 'children' in tailBlock && tailBlock.children.length
+      && !['paragraph', 'heading', 'code', 'table'].includes(tailBlock.type)) tailBlock = tailBlock.children.at(-1)
+    let tailKind: MarkdownResult['tailKind'] = tailBlock && ['paragraph', 'heading'].includes(tailBlock.type)
+      && !/\n\s*\n\s*$/.test(request.text) ? 'inline' : 'block'
     if (!request.done) {
       // Do not repeatedly highlight an open fence. The final parse highlights it.
       let last: MarkdownNode | undefined = tree
@@ -135,13 +140,16 @@ self.onmessage = (event: MessageEvent<MarkdownRequest>) => {
         const lines = source.trimEnd().split('\n')
         const opening = lines[0].match(/^\s*(`{3,}|~{3,})/)
         const closing = opening && lines.length > 1 && new RegExp(`^\\s*${opening[1][0]}{${opening[1].length},}\\s*$`).test(lines.at(-1)!)
-        if (opening && !closing) last.lang = null
+        if (opening && !closing) {
+          last.lang = null
+          tailKind = 'code'
+        }
       }
     }
     const htmlTree = renderer.runSync(tree) as Root
     htmlTree.children = htmlTree.children.flatMap(enrich)
     makeSafe(htmlTree)
-    self.postMessage({ ...request, blocks: packBlocks(request.id, htmlTree.children.map(serialize)) } satisfies MarkdownResult)
+    self.postMessage({ ...request, tailKind, blocks: packBlocks(request.id, htmlTree.children.map(serialize)) } satisfies MarkdownResult)
   } catch (error) {
     self.postMessage({ ...request, blocks: [], error: String(error) } satisfies MarkdownResult)
   }

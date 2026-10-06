@@ -1,6 +1,9 @@
 const { app, BrowserWindow } = require('electron')
 const assert = require('node:assert/strict')
 const { join } = require('node:path')
+const workspaceRegressions = require('./workspace-regressions.cjs')
+const replyUIRegressions = require('./reply-ui-regressions.cjs')
+const { writeFile } = require('node:fs/promises')
 
 const run = async (kind, scale = 1) => {
   const sessionID = 'benchmark-session'
@@ -54,6 +57,58 @@ const run = async (kind, scale = 1) => {
     hasHighlight: !!document.querySelector('.hljs'),
     scrollGap: Math.round((() => { const el = document.querySelector('.hui-chat-scroll'); return el.scrollHeight - el.scrollTop - el.clientHeight })())
   }
+}
+
+const layoutRegressions = async () => {
+  const sessionID = 'benchmark-session', messageID = 'layout-message', partID = 'layout-part'
+  const snapshot = text => window.benchEmit('message.part.updated', { part: { sessionID, messageID, id: partID, type: 'text', text } })
+  const delta = text => window.benchEmit('message.part.delta', { sessionID, messageID, partID, field: 'text', delta: text })
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+  snapshot('开始')
+  await wait(300)
+  const widths = []
+  for (let i = 0; i < 35; i++) {
+    delta('测试文字')
+    await wait(20)
+    widths.push(document.querySelector('.hui-message').getBoundingClientRect().width)
+  }
+  snapshot('历史段落内容。\n\n'.repeat(45) + '持续增长的段落：')
+  await wait(300)
+  const heights = [], scrolls = []
+  let alive = true
+  const sample = () => {
+    heights.push(document.querySelector('.hui-message').getBoundingClientRect().height)
+    scrolls.push(document.querySelector('.hui-chat-scroll').scrollTop)
+    if (alive) requestAnimationFrame(sample)
+  }
+  requestAnimationFrame(sample)
+  for (let i = 0; i < 70; i++) {
+    delta('继续输出文字')
+    await wait(20)
+  }
+  await wait(300)
+  alive = false
+  const countDrops = values => values.slice(1).filter((value, i) => value < values[i] - 1).length
+  const result = {
+    widthRangePx: Math.round(Math.max(...widths) - Math.min(...widths)),
+    heightDrops: countDrops(heights), scrollBacksteps: countDrops(scrolls),
+    samples: heights.length
+  }
+  snapshot('```typescript\nconst start = 0;')
+  await wait(300)
+  let source = 'const start = 0;'
+  let codeTextMismatches = 0
+  for (const chunk of [' // 继续当前行', '\n', 'const next = ', '1;', '\n\n', 'const final = 2;']) {
+    source += chunk
+    delta(chunk)
+    await wait(20)
+    const displayed = document.querySelector('.hui-md pre code')?.textContent
+    if (displayed?.replace(/\n$/, '') !== source.replace(/\n$/, '')) codeTextMismatches++
+  }
+  result.codeTextMismatches = codeTextMismatches
+  window.benchEmit('message.removed', { sessionID, messageID })
+  await wait(100)
+  return result
 }
 
 const regressions = async () => {
@@ -229,7 +284,25 @@ app.whenReady().then(async () => {
     await new Promise(resolve => setTimeout(resolve, 1000))
     await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
     await new Promise(resolve => setTimeout(resolve, 100))
-    for (const kind of ['list', 'paragraph', 'blocks', 'code']) {
+    if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ replyUI: await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})()`) }))
+    if (process.env.BENCH_SCREENSHOT) {
+      await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})(true)`)
+      await writeFile(join(__dirname, '../out/reply-wait-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`window.benchEmit('message.part.updated', { part: { sessionID: 'benchmark-session', messageID: 'ui-reply', id: 'ui-reply-part', type: 'text', text: '收到啦，回复会从这里自然展开。\\n\\n等待条收拢后，正文继续实时显示。' } }); window.benchEmit('session.error', { sessionID: 'benchmark-session', error: { message: '' } })`)
+      await new Promise(resolve => setTimeout(resolve, 350))
+      await writeFile(join(__dirname, '../out/reply-content-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    const layout = await window.webContents.executeJavaScript(`(${layoutRegressions.toString()})()`)
+    console.log(JSON.stringify({ layout }))
+    if (!process.env.BENCH_LAYOUT_RECORD) {
+      assert.ok(layout.widthRangePx < 2, 'streaming changes the assistant bubble width')
+      assert.equal(layout.heightDrops, 0, 'plain-text streaming repeatedly shrinks the bubble')
+      assert.equal(layout.scrollBacksteps, 0, 'plain-text streaming scrolls backwards')
+      assert.equal(layout.codeTextMismatches, 0, 'live code text moves to another line or loses newlines')
+    }
+    for (const kind of process.env.BENCH_LAYOUT_ONLY ? [] : ['list', 'paragraph', 'blocks', 'code']) {
       const result = await window.webContents.executeJavaScript(`(${run.toString()})(${JSON.stringify(kind)}, ${process.env.BENCH_LARGE ? 3 : 1})`)
       console.log(JSON.stringify(result))
       if (kind !== 'code') assert.equal(result.hasFormattedText, true)
@@ -241,8 +314,12 @@ app.whenReady().then(async () => {
       await window.webContents.executeJavaScript(`window.benchEmit('message.removed', { sessionID: 'benchmark-session', messageID: ${JSON.stringify('message-' + kind)} })`)
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    console.log(JSON.stringify({ regressions: await window.webContents.executeJavaScript(`(${regressions.toString()})()`) }))
-    console.log(JSON.stringify({ sessionDeletion: await window.webContents.executeJavaScript(`(${sessionDeletionRegressions.toString()})()`) }))
+    if (!process.env.BENCH_LAYOUT_ONLY) {
+      console.log(JSON.stringify({ regressions: await window.webContents.executeJavaScript(`(${regressions.toString()})()`) }))
+      console.log(JSON.stringify({ workspaces: await window.webContents.executeJavaScript(`(${workspaceRegressions.toString()})()`) }))
+      if (process.env.BENCH_SCREENSHOT) await writeFile(process.env.BENCH_SCREENSHOT, (await window.webContents.capturePage()).toPNG())
+      console.log(JSON.stringify({ sessionDeletion: await window.webContents.executeJavaScript(`(${sessionDeletionRegressions.toString()})()`) }))
+    }
   } catch (error) {
     console.error(error)
     process.exitCode = 1

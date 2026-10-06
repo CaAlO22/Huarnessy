@@ -1,8 +1,10 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { startServer, stopServer, getServerInfo, type ServerInfo } from './opencode-server'
+import { loadWorkspace, saveWorkspace } from './workspace'
 
 let mainWindow: BrowserWindow | null = null
+let workspace = process.cwd()
 
 if (process.env.REMOTE_DEBUGGING_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.REMOTE_DEBUGGING_PORT)
@@ -58,6 +60,20 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  workspace = await loadWorkspace(app.getPath('userData'), process.cwd())
+  ipcMain.handle('workspace:get', () => workspace)
+  ipcMain.handle('workspace:choose', async () => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '切换工作空间',
+      defaultPath: workspace,
+      buttonLabel: '选择工作空间',
+      properties: ['openDirectory']
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    workspace = await saveWorkspace(app.getPath('userData'), result.filePaths[0])
+    return workspace
+  })
   ipcMain.handle('server:get', () => getServerInfo())
   ipcMain.handle('server:restart', async () => {
     stopServer()

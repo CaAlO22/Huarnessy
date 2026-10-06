@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { ServerInfo } from '../main/opencode-server'
 
 const api = {
+  getWorkspacePath: (): Promise<string> => ipcRenderer.invoke('workspace:get'),
+  chooseWorkspacePath: (): Promise<string | null> => ipcRenderer.invoke('workspace:choose'),
   getServerInfo: (): Promise<ServerInfo> => ipcRenderer.invoke('server:get'),
   restartServer: (): Promise<ServerInfo> => ipcRenderer.invoke('server:restart'),
   onServerStatus: (cb: (info: ServerInfo) => void): (() => void) => {

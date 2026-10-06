@@ -233,15 +233,88 @@ body {
 /* The enclosing chat panel already blurs the backdrop. A second blur layer
    growing with each reply needlessly enlarges the compositor's render surface. */
 .hui-message {
+  width: 82%;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
 
 .hui-stream-tail {
+  white-space: inherit;
+}
+
+.hui-stream-tail-block {
+  display: block;
+  margin: 0.55em 0;
   white-space: pre-wrap;
 }
 
 .hui-chat-scroll {
   overflow-anchor: none;
+  scrollbar-gutter: stable;
+}
+
+/* One compact waiting surface; incoming text never waits for this animation. */
+.hui-reply-stage { position: relative; }
+.hui-reply-stage.is-waiting { min-height: 38px; }
+.hui-reply-wait {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: max-content;
+  height: 38px;
+  padding: 0 15px 0 11px;
+  border: 1px solid rgba(185, 231, 255, .19);
+  border-radius: 14px;
+  background: linear-gradient(125deg, rgba(207, 236, 255, .1), rgba(255, 255, 255, .035));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .13), 0 4px 16px rgba(0, 0, 0, .12);
+  color: rgba(232, 244, 255, .72);
+  font-size: 12px;
+  letter-spacing: .02em;
+  transform-origin: 20px center;
+  animation: hui-wait-enter 220ms ease-out both;
+}
+.hui-wait-orbit {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  animation: hui-wait-spin 3.2s linear infinite;
+}
+.hui-wait-seed {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #82e5ed;
+  border-right-color: #b7a2ff;
+  border-radius: 50%;
+  animation: hui-wait-breathe 1.8s cubic-bezier(.45, 0, .25, 1) infinite;
+}
+.hui-reply-wait.is-leaving {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  pointer-events: none;
+  animation: hui-wait-leave 160ms ease-in both;
+}
+.is-revealing > .hui-reply-content { animation: hui-reply-arrive 210ms ease-out both; }
+@keyframes hui-wait-enter {
+  from { opacity: 0; transform: translateY(3px) scale(.94); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes hui-wait-spin { to { transform: rotate(360deg); } }
+@keyframes hui-wait-breathe {
+  0%, 100% { transform: scale(.48); background: #82e5ed; box-shadow: 0 0 8px rgba(130, 229, 237, .3); }
+  45%, 60% { transform: scale(1); background: transparent; border-top-color: #d5c6ff; box-shadow: 0 0 13px rgba(183, 162, 255, .22); }
+}
+@keyframes hui-wait-leave {
+  to { opacity: 0; transform: scale(.22, .5); }
+}
+@keyframes hui-reply-arrive {
+  from { transform: translateY(3px); }
+  to { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hui-wait-orbit, .hui-wait-seed { animation: none; }
+  .hui-reply-wait, .hui-reply-wait.is-leaving, .is-revealing > .hui-reply-content { animation-duration: 1ms; }
 }
 

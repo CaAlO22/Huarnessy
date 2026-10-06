@@ -22,7 +22,10 @@ await server?.listen()
 const env = {
   ...process.env,
   ...(production ? { BENCH_FILE: fileURLToPath(new URL('../out/renderer/index.html', import.meta.url)) } : { BENCH_URL: server.resolvedUrls.local[0] }),
-  BENCH_LARGE: process.argv.includes('--large') ? '1' : ''
+  BENCH_LARGE: process.argv.includes('--large') ? '1' : '',
+  BENCH_LAYOUT_ONLY: process.argv.includes('--layout-only') ? '1' : '',
+  BENCH_LAYOUT_RECORD: process.argv.includes('--record-layout') ? '1' : '',
+  BENCH_SCREENSHOT: process.argv.includes('--screenshot') ? fileURLToPath(new URL('../out/workspace-preview.png', import.meta.url)) : ''
 }
 delete env.ELECTRON_RUN_AS_NODE
 const child = spawn(require('electron'), [fileURLToPath(new URL('./stream-benchmark.cjs', import.meta.url))], {

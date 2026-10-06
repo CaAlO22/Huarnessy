@@ -15,6 +15,7 @@ export interface MarkdownRequest {
 }
 
 export interface MarkdownResult extends MarkdownRequest {
+  tailKind?: 'inline' | 'code' | 'block'
   blocks: RenderedBlock[]
   error?: string
 }
