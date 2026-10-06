@@ -1,0 +1,167 @@
+const { app, BrowserWindow } = require('electron')
+const assert = require('node:assert/strict')
+const { join } = require('node:path')
+
+const run = async (kind, scale = 1) => {
+  const sessionID = 'benchmark-session'
+  const messageID = `message-${kind}`
+  const partID = `part-${kind}`
+  const text = kind === 'list'
+    ? Array.from({ length: 80 * scale }, (_, i) => `- 项目 ${i}: **流式输出**，包含 [链接](https://example.com) 和 $x_${i}^2$，测试连续列表的渲染性能。\n`).join('')
+    : kind === 'paragraph'
+      ? '这是没有空行的长段落，包含 **强调**、`inline code` 与实时流式输出。'.repeat(160 * scale)
+      : kind === 'code'
+        ? '```typescript\n' + 'const value = "实时流式输出";\n'.repeat(400 * scale) + '```\n'
+      : Array.from({ length: 80 * scale }, (_, i) => `## 段落 ${i}\n\n流式 **Markdown** 与 $x^2$。\n\n`).join('')
+  window.benchEmit('message.updated', { info: { id: messageID, sessionID, role: 'assistant' } })
+  window.benchEmit('message.part.updated', { part: { id: partID, messageID, sessionID, type: 'text', text: '' } })
+  const frames = []
+  const longTasks = []
+  let previous = performance.now()
+  let alive = true
+  const frame = now => {
+    frames.push(now - previous)
+    previous = now
+    if (alive) requestAnimationFrame(frame)
+  }
+  requestAnimationFrame(frame)
+  const observer = new PerformanceObserver(list => longTasks.push(...list.getEntries().map(e => e.duration)))
+  observer.observe({ type: 'longtask' })
+  const start = performance.now()
+  const delays = []
+  for (let i = 0; i < text.length; i += 40) {
+    const tick = performance.now()
+    window.benchEmit('message.part.delta', { sessionID, messageID, partID, field: 'text', delta: text.slice(i, i + 40) })
+    await new Promise(resolve => setTimeout(resolve, 4))
+    delays.push(performance.now() - tick)
+  }
+  await new Promise(resolve => setTimeout(resolve, 100))
+  const streamingMs = performance.now() - start
+  window.benchEmit('message.part.updated', { part: { id: partID, messageID, sessionID, type: 'text', text, time: { end: 1 } } })
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  alive = false
+  observer.disconnect()
+  const sorted = frames.slice().sort((a, b) => a - b)
+  return {
+    kind, characters: text.length, streamingMs: Math.round(streamingMs),
+    frameP95Ms: Math.round(sorted[Math.floor(sorted.length * .95)]),
+    maxFrameMs: Math.round(Math.max(...frames)), longTasks: longTasks.length,
+    maxLongTaskMs: Math.round(Math.max(0, ...longTasks)),
+    firstQuarterTickMs: +(delays.slice(0, delays.length / 4).reduce((a, b) => a + b, 0) / (delays.length / 4)).toFixed(1),
+    lastQuarterTickMs: +(delays.slice(-Math.floor(delays.length / 4)).reduce((a, b) => a + b, 0) / Math.floor(delays.length / 4)).toFixed(1),
+    hasFormattedText: !!document.querySelector('.hui-md strong'),
+    hasMath: !!document.querySelector('.katex'),
+    hasHighlight: !!document.querySelector('.hljs'),
+    scrollGap: Math.round((() => { const el = document.querySelector('.hui-chat-scroll'); return el.scrollHeight - el.scrollTop - el.clientHeight })())
+  }
+}
+
+const regressions = async () => {
+  const passed = []
+  const sessionID = 'benchmark-session', messageID = 'regression', partID = 'regression-part'
+  const delta = text => window.benchEmit('message.part.delta', { sessionID, messageID, partID, field: 'text', delta: text })
+  const part = (text, done = false) => window.benchEmit('message.part.updated', { part: {
+    sessionID, messageID, id: partID, type: 'text', text, ...(done ? { time: { end: 1 } } : {})
+  } })
+  const waitFor = async predicate => {
+    const start = performance.now()
+    while (!predicate()) {
+      if (performance.now() - start > 5000) throw new Error('Regression timed out')
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  const check = (condition, name) => { if (!condition) throw new Error(name); passed.push(name) }
+  const displayed = () => document.querySelector('.hui-md')?.textContent
+  part('')
+  delta('A'); part('AB'); delta('C')
+  await waitFor(() => displayed() === 'ABC')
+  check(displayed() === 'ABC', 'delta/snapshot/delta preserves order')
+
+  delta('D')
+  window.benchEmit('message.part.removed', { sessionID, messageID, partID })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  check(!document.querySelector('.hui-md'), 'removal cannot be undone by a pending delta')
+
+  part('switching')
+  delta(' pending')
+  Array.from(document.querySelectorAll('button')).find(b => b.title === 'Other session').click()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  check(!document.querySelector('.hui-md'), 'pending deltas do not leak into another session')
+  Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()
+  await new Promise(resolve => setTimeout(resolve, 100))
+
+  const rich = '# 标题\n\n- **粗体** $x^2$\n- 第二项\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n---\n\n[引用][ref]\n\n[ref]: https://example.com\n\n```unknown-language\n<&>\n```\n\n<script>window.compromised = true</script>\n\n[危险](javascript:alert(1))\n\n&amp;'
+  part(rich, true)
+  await waitFor(() => !!document.querySelector('.hui-md hr') && !!document.querySelector('.katex') && !document.querySelector('.hui-stream-tail'))
+  check(document.querySelectorAll('.hui-md ul > li').length === 2, 'list items have valid DOM parents')
+  check(document.querySelectorAll('.hui-md table tbody > tr > td').length === 2, 'table cells have valid DOM parents')
+  check(!!document.querySelector('.hui-md a[href="https://example.com"]'), 'cross-paragraph reference links resolve')
+  check(!document.querySelector('.hui-md script') && !window.compromised, 'raw HTML stays escaped')
+  check(!document.querySelector('.hui-md a[href^="javascript:"]'), 'unsafe URLs stay filtered')
+  check(document.querySelector('.hui-md pre code').textContent === '<&>\n', 'unknown code language and entities render safely')
+
+  part('- item\n\n  ```typescript\n  const x = 1;\n')
+  await waitFor(() => document.querySelector('.hui-md pre code')?.textContent.includes('const x = 1;') && !document.querySelector('.hui-stream-tail'))
+  check(!document.querySelector('.hljs'), 'nested open fences stream without repeated highlighting')
+  delta('  ```\n')
+  await waitFor(() => !!document.querySelector('.hljs'))
+  check(!!document.querySelector('.hljs'), 'closed nested fences receive highlighting')
+
+  part('滚动测试段落。\n\n'.repeat(100), true)
+  const el = document.querySelector('.hui-chat-scroll')
+  await waitFor(() => el.scrollHeight > el.clientHeight + 500 && !document.querySelector('.hui-stream-tail') && el.scrollHeight - el.scrollTop - el.clientHeight < 5)
+  el.dispatchEvent(new WheelEvent('wheel', { deltaY: -300, bubbles: true }))
+  el.scrollTop -= 300
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const top = el.scrollTop
+  delta('新增内容。\n\n')
+  await new Promise(resolve => setTimeout(resolve, 200))
+  check(Math.abs(el.scrollTop - top) < 10, 'manual upward scrolling stays in place during streaming')
+  el.dispatchEvent(new WheelEvent('wheel', { deltaY: 300, bubbles: true }))
+  el.scrollTop = el.scrollHeight
+  await new Promise(resolve => setTimeout(resolve, 50))
+  delta('继续吸底。\n\n')
+  await new Promise(resolve => setTimeout(resolve, 200))
+  check(el.scrollHeight - el.scrollTop - el.clientHeight < 5, 'scrolling to the bottom resumes following')
+  return passed
+}
+
+app.whenReady().then(async () => {
+  const window = new BrowserWindow({ width: 1200, height: 820, show: false, webPreferences: {
+    preload: join(__dirname, 'stream-benchmark-preload.cjs'), sandbox: false,
+    nodeIntegration: false, contextIsolation: false, backgroundThrottling: false, offscreen: true
+  } })
+  window.webContents.setFrameRate(60)
+  const timeout = setTimeout(() => { console.error('Streaming test timed out'); app.exit(1) }, 120000)
+  window.webContents.on('console-message', event => {
+    if (event.level === 'error') console.error(event.message)
+  })
+  try {
+    // Install the fake kernel before React loads. No real sessions or model requests.
+    if (process.env.BENCH_FILE) await window.loadFile(process.env.BENCH_FILE)
+    else await window.loadURL(process.env.BENCH_URL + '?benchmark')
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    for (const kind of ['list', 'paragraph', 'blocks', 'code']) {
+      const result = await window.webContents.executeJavaScript(`(${run.toString()})(${JSON.stringify(kind)}, ${process.env.BENCH_LARGE ? 3 : 1})`)
+      console.log(JSON.stringify(result))
+      if (kind !== 'code') assert.equal(result.hasFormattedText, true)
+      if (kind === 'list' || kind === 'blocks') assert.equal(result.hasMath, true)
+      if (kind === 'code') assert.equal(result.hasHighlight, true)
+      assert.ok(result.frameP95Ms < (process.env.BENCH_LARGE ? 100 : 75), 'streaming frame latency regressed')
+      assert.ok(result.maxLongTaskMs < 150, 'streaming blocks the renderer for too long')
+      assert.ok(result.scrollGap < 5, 'reply keeps scrolling after worker formatting')
+      await window.webContents.executeJavaScript(`window.benchEmit('message.removed', { sessionID: 'benchmark-session', messageID: ${JSON.stringify('message-' + kind)} })`)
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    console.log(JSON.stringify({ regressions: await window.webContents.executeJavaScript(`(${regressions.toString()})()`) }))
+  } catch (error) {
+    console.error(error)
+    process.exitCode = 1
+  } finally {
+    clearTimeout(timeout)
+    window.destroy()
+    app.exit(process.exitCode ?? 0)
+  }
+})

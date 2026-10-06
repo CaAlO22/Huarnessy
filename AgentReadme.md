@@ -20,7 +20,7 @@
 2. 流式过程中要能实时渲染 **Markdown / LaTeX（KaTeX）/ 代码高亮**。
 3. 交互体验要与「opencode 官方 GUI」一样丝滑（ms 级、逐 token 观感）。
 
-> 关键教训：**卡顿一坨一坨的根因不在内核，而在渲染**。详见第 5 节，切勿再从内核或传输层找原因。
+> 旧调查结论仅作背景；应以当前代码与可复现的性能测量判断瓶颈。详见第 5 节。
 
 ---
 
@@ -32,7 +32,7 @@
 | 构建 | electron-vite 5（Vite 7） |
 | UI | React 19 + TypeScript 7 |
 | 样式 | Tailwind CSS v4（`@tailwindcss/vite`） |
-| Markdown | `react-markdown` + `remark-gfm` + `remark-math` + `rehype-katex` + `rehype-highlight` |
+| Markdown | Worker 中的 `unified` + `remark-parse` + `remark-gfm` + `remark-math` + `remark-rehype` + `rehype-stringify`；`react-markdown` 提供安全 URL 转换 |
 | 高亮/公式 | `highlight.js`、`katex` |
 | 内核通信 | `@opencode-ai/sdk/client`（REST）+ 原生 `EventSource`（SSE） |
 
@@ -44,8 +44,12 @@
 OpencodeHUI/
 ├─ electron.vite.config.ts     # electron-vite 配置（@ 别名、React、Tailwind 插件）
 ├─ tsconfig.json               # TS 配置（ES2022 / Bundler / react-jsx / paths:@）
-├─ package.json                # 脚本：dev / build / preview / typecheck
+├─ package.json                # 脚本：dev / build / preview / typecheck / test:stream
 ├─ .vscode/launch.json         # F5 调试（Main / Renderer / 复合 Debug All）
+├─ scripts/
+│  ├─ stream-benchmark.mjs     # 启动开发服务器或生产页面及 Electron 测试进程
+│  ├─ stream-benchmark.cjs     # 流式性能测量与显示/事件/滚动回归断言
+│  └─ stream-benchmark-preload.cjs # 页面加载前注入假内核，无真实模型请求
 └─ src/
    ├─ main/
    │  ├─ index.ts              # Electron 主进程：创建无边框窗口、IPC、调试端口开关
@@ -57,6 +61,10 @@ OpencodeHUI/
       └─ src/
          ├─ main.tsx           # 挂载 + 引入 katex/highlight 的 CSS
          ├─ App.tsx            # 全部界面与事件处理（核心文件）
+         ├─ stream-state.ts   # 按 SSE 顺序归并消息事件
+         ├─ StreamingMarkdown.tsx # 即时文本展示、格式化调度与 DOM 复用
+         ├─ markdown.worker.ts # Markdown / KaTeX / 高亮计算与有界缓存
+         ├─ markdown-types.ts  # Worker 请求、响应与渲染片段的数据类型
          ├─ styles.css         # 液态玻璃 + .hui-md Markdown 样式
          ├─ env.d.ts           # window.api 类型声明
          └─ assets.d.ts        # 静态资源类型
@@ -66,7 +74,8 @@ OpencodeHUI/
 
 - **Main**：拉起/回收内核、创建窗口、IPC 转发；不参与业务逻辑。
 - **Preload**：`contextBridge` 暴露 `getServerInfo / restartServer / onServerStatus / window.{minimize,maximize,close}`。
-- **Renderer**：唯一执行业务的地方——直接连本地内核的 REST 与 SSE。
+- **Renderer**：直接连接本地内核的 REST 与 SSE，管理消息状态、交互和 DOM 更新。
+- **Markdown Worker**：承担 Markdown 解析、公式排版、代码高亮与格式化缓存，不负责消息接收或发送。
 
 ---
 
@@ -78,6 +87,7 @@ npm run dev          # 开发（HMR）
 npm run typecheck    # tsc --noEmit
 npm run build        # 生产构建（out/）
 npm run preview      # 运行生产构建
+npm run test:stream  # 假内核驱动的 Electron 流式性能与功能回归
 ```
 
 - **VSCode 调试**：F5 → `Debug All`（Main 用 node 调试、Renderer 用 chrome 9222 attach）。
@@ -86,41 +96,61 @@ npm run preview      # 运行生产构建
 
 ---
 
-## 5. 流式渲染设计（本项目最核心、最易踩坑处）
+## 5. 流式渲染设计（2026-10-06 修订）
 
 ### 数据流
-`opencode serve` → SSE `/event` → Renderer 的 `EventSource.onmessage` → 更新 React 状态 → 渲染。
+`opencode serve` → SSE `/event` → 有序消息事件队列 → 每帧提交 React 状态 → 立即显示新文本。
+Markdown / KaTeX / 高亮由独立 Worker 计算；格式化结果在下一绘制帧应用，期间新增文本始终可见。
 
-### 事件形状（要点）
-- `message.part.delta`：`properties = { sessionID, messageID, partID, field:"text", delta }`。
-  - **真正的流式信号；SDK 类型里没有此事件，需用原生 EventSource 处理。**
-- `message.part.updated`：`properties.part` 为部件快照（含 `type/text/time`）。
-- `message.updated` / `message.part.removed` / `message.removed` / `session.idle` / `session.error`。
-- `part.type` 取值：`text | reasoning | tool | file | step-start | step-finish | patch | retry`。
+### 已验证的问题
 
-### 已确立的正确做法
+旧实现只用空行切分 `splitStreaming()`。连续列表、表格、无空行长段落仍是一个不断增长的尾块，每次 delta 都在主线程完整执行 Markdown、公式、高亮，并且 ReactMarkdown 每次重新创建处理器、注册高亮语言。缓存已完成的段落不能覆盖这些输入。
+另外，delta 推迟到 rAF 才提交，而 `message.part.updated` 快照直接提交，会颠倒 SSE 原始顺序，导致重复追加、回退；切换会话时未清理的 delta 还可能串入新会话。
 
-1. **禁用人工平滑/攒批延迟**。
-2. **流式 Markdown 必须按块增量渲染**：
-   - `splitStreaming()` 把文本切成「已完成块」与「尾部未闭合块」，用 `\n\n` 切分且**不切进未闭合的代码围栏**。
-   - 已完成块交给被 `memo` 的 `<Markdown>`，**只解析一次**。
-   - **未闭合的代码围栏先以纯文本 `<pre class="hui-code hui-code-live">` 显示**，闭合后再高亮一次。
-   - 全文只在部件结束（`part.time?.end != null`）时整体解析一次。
-3. **按动画帧合并提交**（关键）：
-   - delta 入 `pendingDeltas` 缓冲，用 `requestAnimationFrame` 每帧最多提交一次，`reduceDelta()` 顺序合并。
-   - 这不是延迟：显示器每帧最多绘制一次，同帧内多次渲染既不可见又会拖垮主线程。
-4. `rehype-highlight` 传 `{ detect: false, ignoreMissing: true }`，**关闭自动语言探测**。
-5. 自动吸底用 `requestAnimationFrame` 节流，避免每个 delta 强制同步重排。
+本机 Electron 开发模式固定数据复现（80 条连续列表、5,660 字符、40 字符/批、4ms 发送间隔）：旧实现输出过程约 10.2s，前四分之一每批平均 19.1ms、后四分之一 114.1ms，83 次 >50ms 主线程长任务。此数据来自离线假内核，不受模型速度影响。不能仅以“dev 模式开销”解释该缺陷。
 
-### 为什么必须这样（血泪调查结论）
+### 当前实现
 
-- 最初「每个 delta 全量重跑 `react-markdown` + `rehype-highlight`」，dev 模式单次渲染约 **12ms**，而 delta 间隔仅 **3–5ms** → 渲染追不上 → 主线程积压 → SSE 事件排队 → 解堵后**一次性爆发**（即用户口中的「一坨一坨」）。
-- 铁证：477 个 delta **只在 5 个事件循环 tick 到达**，并伴随单个 **3825ms 长任务**；而给「App 不渲染的会话」发消息时，458 个 delta 分散在 **93 个 tick、0 长任务**。→ 卡顿 100% 在渲染侧。
-- CPU Profiler 热点：`react_jsx-dev-runtime`（dev 开销）、`rehype-highlight`、`react-markdown`。
-- **修复后**：dev 下 tick 数 4→144、最大突发 354→20、长任务 3.8s→无、屏幕 464 帧/4.9s（≈90fps）。
-- **生产构建**（无 `jsxDEV`）本就宽裕，修复后同样顺滑。
+1. `stream-state.ts` 对 delta、部件快照、消息元信息与删除事件按接收顺序归并。同帧只复制一次消息数组及受影响部件数组，保持未变化消息的引用。
+2. 会话切换、连接清理时取消待提交事件。REST 返回结果检查会话代次及事件版本，避免覆盖更新中的 SSE 状态。
+3. `StreamingMarkdown.tsx` 立即展示已收到的新文本；格式化尚未完成的后缀临时以原始文本显示。没有打字机、字符播放队列或固定等待计时器。
+4. `markdown.worker.ts` 在 Worker 中解析完整 Markdown，保留跨段引用链接、列表、表格语义；复用 unified 处理器及高亮器。未闭合围栏暂不高亮。
+5. 段落、列表项、代码块的格式化结果使用有界缓存（最多 512 项、约 8,000,000 个序列化字符的预算）。旧列表项及表格行保留 DOM；跨 Worker 消息仅传变化的片段，已有片段通过 ID 复用。
+6. 格式化请求最多一个执行中，每个部件只保留最新待执行快照；格式化结果每帧最多应用一次。格式化计算不阻塞文字显示，也不堆积历史快照。
+7. 原始 HTML 保持转义；链接沿用 ReactMarkdown 的安全 URL 转换。渲染进程只插入本项目流水线生成的 HTML。
+8. 自动吸底用 ResizeObserver + rAF 同时跟踪文字增长和异步排版的尺寸变化，并区分用户滚动与排版引起的滚动事件。消息气泡不重复执行父面板已经提供的背景模糊。
+9. Vite 使用 `worker` 导出条件，确保 Markdown 的字符实体解码不调用 `document`；预优化 Worker 依赖，避免第一次生成回复时触发依赖发现后的整页重载。
 
-> 忠告：**不要**再用「打字机/平滑/延迟」去掩盖卡顿；正确方向是降低渲染成本 + 帧内合并。
+### 回归验证
+
+```bash
+npm run typecheck
+npm run build
+npm run test:stream                  # Electron + Vite 开发模式
+npm run test:stream -- --large        # 约 1.7 万字列表、2 万字段落、近 3 万字符代码
+npm run test:stream -- --production   # 直接加载 out/renderer/index.html，验证 file:// Worker
+```
+
+测试内核为假的，不创建真实会话、不请求模型。覆盖流式列表/长段落/多段落/代码、公式、高亮、自动吸底，以及快照与 delta 顺序、删除、会话切换、引用链接、HTML 转义、安全 URL、未知代码语言。测试打印输出耗时、帧间隔、主线程长任务、前后段处理耗时；机器负载不同会改变数值，不应把一次测试当成所有输入的性能保证。
+
+### 本次修复的验证结果（2026-10-06）
+
+`typecheck`、`build`、开发模式常规测试、开发模式长回复压力测试、生产页面测试均已通过。生产测试直接在 Electron 中加载构建后的 `file://` 页面，包含 Worker 的实际加载过程。
+
+同一份 80 条连续列表输入的开发模式对比：
+
+| 指标 | 修复前 | 修复后 |
+|---|---:|---:|
+| 输出过程耗时 | 10,208ms | 1,047ms |
+| 后四分之一每批平均耗时 | 114.1ms | 7.2ms |
+| 主线程 >50ms 长任务 | 83 次 | 0 次 |
+| 帧间隔第 95 百分位 | 133ms | 17ms |
+
+长回复压力测试覆盖 17,300 字符列表、20,640 字符长段落、8,770 字符多段落和 28,818 字符代码。列表、多段落、代码未出现主线程长任务；长段落出现一次约 52ms 的长任务，说明浏览器布局仍有成本，不能宣称所有长度和格式下都绝无卡顿。
+
+最终生产测试通过 13 项功能回归断言，除上述内容外，还覆盖嵌套代码围栏闭合前后高亮、用户向上滚动后保持位置、回到底部后恢复自动跟随。测试中的输出过程耗时包含发送计时器和末尾等待，不是单次解析耗时，也不是模型生成速度。
+
+当前测试为离线假内核验证；真实模型的网络延迟、分组大小与生成速度未由这些数据证明。后续如遇不同输入的卡顿，应保留输入与运行模式，先运行同类复现并测量主线程长任务，再判断是否需要调整。
 
 ---
 
@@ -152,7 +182,7 @@ npm run preview      # 运行生产构建
 
 ## 8. 待办 / 已知限制
 
-- 流式时按块渲染，跨空行的紧耦合结构（如松列表跨段）在流式期间可能呈现为多段；部件结束时整体重解析可纠正。
+- 格式化计算期间，新增后缀先以原始文本显示，Worker 返回后更新为 Markdown；超长单段落仍存在浏览器布局成本。
 - 长代码块在闭合成围栏前不高亮（有意为之，换取流式性能）。
 - 尚未做会话持久化 UI、工具调用结果富展示、多模态等增强。
 
@@ -162,8 +192,13 @@ npm run preview      # 运行生产构建
 
 | 想改什么 | 去哪里 |
 |---|---|
-| 界面 / 事件处理 / 流式逻辑 | `src/renderer/src/App.tsx` |
+| 界面 / SSE 接收 / 会话切换 / 自动滚动 | `src/renderer/src/App.tsx` |
+| 有序消息归并 / delta 与快照更新 | `src/renderer/src/stream-state.ts` |
+| 即时文本 / Worker 调度 / DOM 片段复用 | `src/renderer/src/StreamingMarkdown.tsx` |
+| Markdown 解析 / 公式与高亮 / 格式化缓存 | `src/renderer/src/markdown.worker.ts` |
+| Worker 请求、响应与片段类型 | `src/renderer/src/markdown-types.ts` |
 | Markdown / 玻璃样式 | `src/renderer/src/styles.css` |
+| 流式性能与功能回归 | `scripts/stream-benchmark.mjs`、`scripts/stream-benchmark.cjs`、`scripts/stream-benchmark-preload.cjs` |
 | 内核启动 / env / 二进制解析 | `src/main/opencode-server.ts` |
 | 窗口 / IPC / 调试端口 | `src/main/index.ts` |
 | 暴露给渲染进程的 API | `src/preload/index.ts` |

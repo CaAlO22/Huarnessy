@@ -1,10 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createOpencodeClient } from '@opencode-ai/sdk/client'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import rehypeHighlight from 'rehype-highlight'
+import { StreamingMarkdown } from './StreamingMarkdown'
+import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
 
 interface ServerInfo {
   status: 'starting' | 'ready' | 'error' | 'stopped'
@@ -13,11 +10,6 @@ interface ServerInfo {
   error?: string
   version?: string
   binary?: string
-}
-
-interface MessageEntry {
-  info: any
-  parts: any[]
 }
 
 interface ModelOption {
@@ -34,101 +26,8 @@ interface SelectedModel {
 
 const unwrap = (r: any): any => (r && r.data !== undefined ? r.data : r)
 
-function reduceDelta(prev: MessageEntry[], d: any): MessageEntry[] {
-  const { sessionID, messageID, partID, field, delta } = d
-  if (!partID || typeof delta !== 'string') return prev
-  let next = prev
-  let i = next.findIndex((m) => m.info?.id === messageID)
-  if (i === -1) {
-    next = [...prev, { info: { id: messageID, role: 'assistant' }, parts: [] }]
-    i = next.length - 1
-  } else {
-    next = prev.slice()
-  }
-  const msg = next[i]
-  const pi = msg.parts.findIndex((p: any) => p.id === partID)
-  const parts = msg.parts.slice()
-  if (pi === -1) {
-    parts.push({
-      id: partID,
-      messageID,
-      sessionID,
-      type: field === 'text' ? 'text' : field,
-      [field]: delta
-    })
-  } else {
-    const p = parts[pi]
-    parts[pi] = { ...p, [field]: (p[field] ?? '') + delta }
-  }
-  next[i] = { ...msg, parts }
-  return next
-}
-
-const Markdown = memo(function Markdown({ text }: { text: string }): React.ReactElement {
-  return (
-    <div className="hui-md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[[rehypeKatex, { throwOnError: false }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  )
-})
-
-const FENCE_RE = /^\s*(```+|~~~+)/
-function splitStreaming(text: string): { blocks: string[]; openTail: boolean } {
-  const lines = text.split('\n')
-  const blocks: string[] = []
-  let buf: string[] = []
-  let fence: string | null = null
-  for (const line of lines) {
-    const m = line.match(FENCE_RE)
-    if (m) {
-      if (!fence) fence = m[1][0]
-      else if (line.trim().startsWith(fence.repeat(3))) fence = null
-    }
-    buf.push(line)
-    if (!fence && line.trim() === '') {
-      blocks.push(buf.join('\n'))
-      buf = []
-    }
-  }
-  const tail = buf.join('\n')
-  const openTail = fence !== null
-  if (tail) blocks.push(tail)
-  return { blocks, openTail }
-}
-
-/* 流式期间按块渲染：已完成块被 memo 缓存只解析一次，
-   未闭合的代码块先以纯文本显示，避免每个 delta 全量重跑 markdown/highlight */
-const StreamingMarkdown = memo(function StreamingMarkdown({
-  text,
-  done
-}: {
-  text: string
-  done?: boolean
-}): React.ReactElement {
-  if (done) return <Markdown text={text} />
-  const { blocks, openTail } = splitStreaming(text)
-  return (
-    <>
-      {blocks.map((b, i) =>
-        openTail && i === blocks.length - 1 ? (
-          <pre key={i} className="hui-code hui-code-live">
-            {b}
-          </pre>
-        ) : (
-          <Markdown key={i} text={b} />
-        )
-      )}
-    </>
-  )
-})
-
-const PartView = memo(function PartView({ part }: { part: any }): React.ReactElement | null {
-  const done = part.time?.end != null
+const PartView = memo(function PartView({ part, completed }: { part: any; completed: boolean }): React.ReactElement | null {
+  const done = completed || part.time?.end != null
   if (part.type === 'text') {
     if (!part.text) return null
     return <StreamingMarkdown text={part.text} done={done} />
@@ -193,11 +92,11 @@ const MessageView = memo(function MessageView({ msg }: { msg: MessageEntry }): R
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
         className={`flex min-w-0 max-w-[82%] flex-col gap-2 rounded-2xl px-4 py-3 ${
-          isUser ? 'border border-white/15 bg-white/12' : 'glass'
+          isUser ? 'border border-white/15 bg-white/12' : 'glass hui-message'
         }`}
       >
         {msg.parts?.map((p, i) => (
-          <PartView key={p.id ?? i} part={p} />
+          <PartView key={p.id ?? i} part={p} completed={isUser || msg.info?.time?.completed != null} />
         ))}
       </div>
     </div>
@@ -250,7 +149,9 @@ export default function App(): React.ReactElement {
   const activeIdRef = useRef<string | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
   const stickBottom = useRef(true)
+  const userScrolling = useRef(false)
 
   activeIdRef.current = activeId
 
@@ -333,91 +234,55 @@ export default function App(): React.ReactElement {
     }
   }, [])
 
-  const upsertPart = useCallback((part: any) => {
-    if (!part?.id) return
-    setMessages((prev) => {
-      let next = prev
-      let i = next.findIndex((m) => m.info?.id === part.messageID)
-      if (i === -1) {
-        next = [...prev, { info: { id: part.messageID, role: 'assistant' }, parts: [] }]
-        i = next.length - 1
-      } else {
-        next = prev.slice()
-      }
-      const msg = next[i]
-      const pi = msg.parts.findIndex((p: any) => p.id === part.id)
-      const parts = msg.parts.slice()
-      if (pi === -1) parts.push(part)
-      else parts[pi] = part
-      next[i] = { ...msg, parts }
-      return next
-    })
-  }, [])
-
-  const upsertMessage = useCallback((info: any) => {
-    if (!info?.id) return
-    setMessages((prev) => {
-      const i = prev.findIndex((m) => m.info?.id === info.id)
-      if (i === -1) return [...prev, { info, parts: [] }]
-      const next = prev.slice()
-      next[i] = { ...next[i], info: { ...next[i].info, ...info } }
-      return next
-    })
-  }, [])
-
-  /* 按动画帧合并提交：同一帧内到达的多个 delta 只触发一次渲染。
-     显示器每帧最多画一次，所以这不增加任何可见延迟；
-     但它保证主线程不会被"每个 delta 各渲染一次"的积压淹没（那正是之前一坨一坨的根因）。*/
-  const pendingDeltas = useRef<any[]>([])
+  // All message events share one ordered queue, including snapshots/removals.
+  const pendingEvents = useRef<MessageEvent[]>([])
   const rafRef = useRef<number | null>(null)
-  const flushDeltas = useCallback(() => {
+  const revision = useRef(0)
+  const sessionEpoch = useRef(0)
+  const flushEvents = useCallback(() => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
     rafRef.current = null
-    const batch = pendingDeltas.current
-    if (batch.length === 0) return
-    pendingDeltas.current = []
-    setMessages((prev) => {
-      let next = prev
-      for (const d of batch) next = reduceDelta(next, d)
-      return next
-    })
+    const batch = pendingEvents.current
+    pendingEvents.current = []
+    if (batch.length) setMessages(prev => reduceMessageEvents(prev, batch))
   }, [])
-  const enqueueDelta = useCallback(
-    (d: any) => {
-      if (!d?.partID || typeof d.delta !== 'string') return
-      pendingDeltas.current.push(d)
-      if (rafRef.current == null) rafRef.current = requestAnimationFrame(flushDeltas)
-    },
-    [flushDeltas]
-  )
-
-  const removePart = useCallback((messageID: string, partID: string) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.info?.id === messageID ? { ...m, parts: m.parts.filter((p) => p.id !== partID) } : m
-      )
-    )
+  const clearEvents = useCallback(() => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+    rafRef.current = null
+    pendingEvents.current = []
+    sessionEpoch.current++
+    if (refreshTimer.current) clearTimeout(refreshTimer.current)
   }, [])
-
-  const removeMessage = useCallback((id: string) => {
-    setMessages((prev) => prev.filter((m) => m.info?.id !== id))
-  }, [])
+  const enqueueEvent = useCallback((type: MessageEventType, properties: any) => {
+    revision.current++
+    pendingEvents.current.push({ type, properties })
+    if (rafRef.current == null) rafRef.current = requestAnimationFrame(flushEvents)
+  }, [flushEvents])
 
   const refreshMessages = useCallback(() => {
     if (refreshTimer.current) clearTimeout(refreshTimer.current)
+    const epoch = sessionEpoch.current
     refreshTimer.current = setTimeout(async () => {
       const c = clientRef.current
       const id = activeIdRef.current
+      const version = revision.current
       if (!c || !id) return
       try {
         const r = await c.session.messages({ path: { id } })
+        // A delayed REST response must not replace a newer SSE update/session.
+        if (epoch !== sessionEpoch.current || id !== activeIdRef.current || version !== revision.current) return
+        flushEvents()
         setMessages(unwrap(r) ?? [])
       } catch (e) {
         console.error('load messages failed', e)
       }
     }, 60)
-  }, [])
+  }, [flushEvents])
 
   const openSession = useCallback(async (id: string) => {
+    clearEvents()
+    const epoch = sessionEpoch.current
+    const version = revision.current
     setActiveId(id)
     activeIdRef.current = id
     setMessages([])
@@ -425,11 +290,19 @@ export default function App(): React.ReactElement {
     if (!c) return
     try {
       const r = await c.session.messages({ path: { id } })
-      setMessages(unwrap(r) ?? [])
+      if (epoch !== sessionEpoch.current || id !== activeIdRef.current) return
+      flushEvents()
+      const snapshot: MessageEntry[] = unwrap(r) ?? []
+      setMessages(prev => {
+        if (version === revision.current) return snapshot
+        const live = new Map(prev.map(message => [message.info?.id, message]))
+        return [...snapshot.map(message => live.get(message.info?.id) ?? message),
+          ...prev.filter(message => !snapshot.some(old => old.info?.id === message.info?.id))]
+      })
     } catch (e) {
       console.error('open session failed', e)
     }
-  }, [])
+  }, [clearEvents, flushEvents])
 
   useEffect(() => {
     let unsub: (() => void) | undefined
@@ -448,6 +321,7 @@ export default function App(): React.ReactElement {
 
     const client = createOpencodeClient({ baseUrl: url })
     clientRef.current = client
+    clearEvents()
     setSessions([])
     setMessages([])
     setModels([])
@@ -473,31 +347,32 @@ export default function App(): React.ReactElement {
       switch (t) {
         case 'message.updated': {
           if (!active || (p.info?.sessionID && p.info.sessionID !== active)) return
-          upsertMessage(p.info)
+          enqueueEvent('message.updated', p)
           break
         }
         case 'message.part.updated': {
           if (!active || (p.part?.sessionID && p.part.sessionID !== active)) return
-          if (p.part) upsertPart(p.part)
+          enqueueEvent('message.part.updated', p)
           break
         }
         case 'message.part.delta': {
           if (!active || (p.sessionID && p.sessionID !== active)) return
-          enqueueDelta(p)
+          enqueueEvent('message.part.delta', p)
           break
         }
         case 'message.part.removed': {
           if (!active || (p.sessionID && p.sessionID !== active)) return
-          removePart(p.messageID, p.partID)
+          enqueueEvent('message.part.removed', p)
           break
         }
         case 'message.removed': {
           if (!active || (p.sessionID && p.sessionID !== active)) return
-          removeMessage(p.messageID)
+          enqueueEvent('message.removed', p)
           break
         }
         case 'session.idle': {
           if (!active || !p.sessionID || p.sessionID === active) {
+            flushEvents()
             setBusy(false)
             refreshMessages()
           }
@@ -522,6 +397,7 @@ export default function App(): React.ReactElement {
 
     return () => {
       es.close()
+      clearEvents()
       if (esRef.current === es) esRef.current = null
       clientBase.current = null
     }
@@ -531,27 +407,39 @@ export default function App(): React.ReactElement {
     loadSessions,
     loadConfig,
     refreshMessages,
-    upsertMessage,
-    upsertPart,
-    enqueueDelta,
-    removePart,
-    removeMessage
+    enqueueEvent,
+    clearEvents,
+    flushEvents
   ])
 
   useEffect(() => {
-    if (!stickBottom.current) return
     const el = scrollRef.current
-    if (!el) return
-    const raf = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight
+    const content = contentRef.current
+    if (!el || !content) return
+    let raf: number | null = null
+    const observer = new ResizeObserver(() => {
+      if (!stickBottom.current || raf != null) return
+      raf = requestAnimationFrame(() => {
+        raf = null
+        if (stickBottom.current) el.scrollTop = el.scrollHeight
+      })
     })
-    return () => cancelAnimationFrame(raf)
-  }, [messages])
+    // Worker formatting can change height even when the message text is unchanged.
+    observer.observe(content)
+    return () => {
+      observer.disconnect()
+      if (raf != null) cancelAnimationFrame(raf)
+    }
+  }, [])
 
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
-    stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    // Height changes/programmatic scrolling also emit scroll events. They must
+    // not disable following the reply before the ResizeObserver can catch up.
+    if (atBottom || userScrolling.current) stickBottom.current = atBottom
+    userScrolling.current = false
   }
 
   useEffect(() => {
@@ -582,6 +470,7 @@ export default function App(): React.ReactElement {
       const s = unwrap(r)
       id = s?.id ?? null
       if (id) {
+        clearEvents()
         setActiveId(id)
         activeIdRef.current = id
         setMessages([])
@@ -712,22 +601,35 @@ export default function App(): React.ReactElement {
           <div
             ref={scrollRef}
             onScroll={onScroll}
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5"
+            onWheel={(event) => {
+              userScrolling.current = true
+              if (event.deltaY < 0) stickBottom.current = false
+            }}
+            onPointerDown={(event) => {
+              if (event.clientX >= event.currentTarget.getBoundingClientRect().right - 12) userScrolling.current = true
+            }}
+            onTouchStart={() => { userScrolling.current = true }}
+            onKeyDown={(event) => {
+              if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) userScrolling.current = true
+            }}
+            className="hui-chat-scroll min-h-0 flex-1 overflow-y-auto p-5"
           >
-            {messages.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
-                <div className="text-lg font-medium text-white/60">开始一段对话</div>
-                <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
-              </div>
-            ) : (
-              messages.map((m, i) => <MessageView key={m.info?.id ?? i} msg={m} />)
-            )}
-            {busy ? (
-              <div className="flex items-center gap-2 pl-1 text-xs text-white/50">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
-                正在思考…
-              </div>
-            ) : null}
+            <div ref={contentRef} className={`space-y-4 ${messages.length === 0 ? 'h-full' : ''}`}>
+              {messages.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
+                  <div className="text-lg font-medium text-white/60">开始一段对话</div>
+                  <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
+                </div>
+              ) : (
+                messages.map((m, i) => <MessageView key={m.info?.id ?? i} msg={m} />)
+              )}
+              {busy ? (
+                <div className="flex items-center gap-2 pl-1 text-xs text-white/50">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
+                  正在思考…
+                </div>
+              ) : null}
+            </div>
           </div>
 
           <div className="shrink-0 p-3 pt-0">
