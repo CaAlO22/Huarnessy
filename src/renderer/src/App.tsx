@@ -24,7 +24,25 @@ interface ModelOption {
   providerName: string
   modelID: string
   modelName: string
+  contextLimit: number
+  outputLimit: number
 }
+
+interface CommandOption {
+  name: string
+  description?: string
+  builtin?: boolean
+}
+
+// Commands the opencode kernel exposes through its TUI are not part of
+// `command.list()`; provide the essential ones client-side so the slash menu
+// is not limited to user-defined commands and skills.
+const builtinCommands: CommandOption[] = [
+  { name: 'compact', description: '压缩当前会话的上下文', builtin: true },
+  { name: 'new', description: '新建会话', builtin: true },
+  { name: 'undo', description: '撤回上一轮对话', builtin: true },
+  { name: 'redo', description: '恢复撤回的对话', builtin: true }
+]
 
 interface SelectedModel {
   providerID: string
@@ -80,6 +98,27 @@ const toolColors: Record<string, string> = {
 
 const displayToolName = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1)
 
+const imageFilePattern = /\.(avif|bmp|gif|heic|heif|ico|jpe?g|png|svg|tiff?|webp)$/i
+
+// A `read` call whose result carries an image attachment (or whose path ends in
+// an image extension) is surfaced as "PicRead" so it reads differently from a
+// plain source Read.
+const isImageRead = (tool: string, state: any): boolean => {
+  if (tool.toLowerCase() !== 'read') return false
+  const attachments = state?.attachments
+  if (Array.isArray(attachments) && attachments.some((file: any) => typeof file?.mime === 'string' && file.mime.startsWith('image/'))) return true
+  const mime = state?.metadata?.mime ?? state?.metadata?.display?.mime
+  if (typeof mime === 'string' && mime.startsWith('image/')) return true
+  const path = state?.input?.filePath ?? state?.input?.path ?? state?.metadata?.display?.path
+  return typeof path === 'string' && imageFilePattern.test(path)
+}
+
+const toolDisplayName = (tool: string, state: any): string => isImageRead(tool, state) ? 'PicRead' : displayToolName(tool)
+
+// Header context ring geometry: keep the progress arc in sync with the radius.
+const contextRingRadius = 15.5
+const contextRingCircumference = 2 * Math.PI * contextRingRadius
+
 const defaultPanelTransparency = 55
 const defaultChatFontSize = 15.5
 const colorFlow = {
@@ -129,6 +168,49 @@ const plainGlassFilter: CSSProperties = {
   backdropFilter: 'blur(22px) saturate(160%)',
   WebkitBackdropFilter: 'blur(22px) saturate(160%)'
 }
+const nonNegativeLineNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
+
+const readToolMetrics = (state: any): string | null => {
+  const display = state.metadata?.display
+  const offset = nonNegativeLineNumber(state.input?.offset)
+  const requestedStart = offset && offset > 0 ? offset : 1
+  if (state.status !== 'completed') return `从第 ${requestedStart} 行开始`
+  if (display?.type === 'directory') return null
+
+  if (display?.type === 'file') {
+    const start = nonNegativeLineNumber(display.lineStart)
+    const end = nonNegativeLineNumber(display.lineEnd)
+    if (start !== undefined && end !== undefined) {
+      return `从第 ${start} 行开始 · 读取 ${Math.max(0, end - start + 1)} 行`
+    }
+  }
+
+  // Older kernels only expose the numbered lines in the text output.
+  const output = typeof state.output === 'string' ? state.output : ''
+  const lines = [...output.matchAll(/^\s*(\d+)(?::\s|\|)/gm)].map(match => Number(match[1]))
+  if (lines.length) return `从第 ${lines[0]} 行开始 · 读取 ${lines.length} 行`
+  return null
+}
+
+const editToolMetrics = (state: any): string | null => {
+  if (state.status !== 'completed') return null
+  const fileDiff = state.metadata?.filediff
+  let added = nonNegativeLineNumber(fileDiff?.additions)
+  let removed = nonNegativeLineNumber(fileDiff?.deletions)
+  if (added === undefined || removed === undefined) {
+    const diff = typeof state.metadata?.diff === 'string' ? state.metadata.diff : ''
+    if (!diff) return null
+    added = 0
+    removed = 0
+    for (const line of diff.split(/\r?\n/)) {
+      if (line.startsWith('+') && !line.startsWith('+++')) added++
+      if (line.startsWith('-') && !line.startsWith('---')) removed++
+    }
+  }
+  return `新增 ${added} 行 · 移除 ${removed} 行`
+}
+
 const PartView = memo(function PartView({ part, completed, textLimit }: { part: any; completed: boolean; textLimit?: number }): React.ReactElement | null {
   const done = completed || part.time?.end != null
   let text: string = part.text ?? ''
@@ -156,7 +238,13 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
     const state = part.state ?? {}
     const toolName = String(part.tool ?? 'Tool')
     const toolColor = toolColors[toolName.toLowerCase()] ?? 'default'
-    const displayName = displayToolName(toolName)
+    const imageRead = isImageRead(toolName, state)
+    const displayName = imageRead ? 'PicRead' : displayToolName(toolName)
+    const bashRunning = toolName.toLowerCase() === 'bash' && state.status === 'running'
+    const command = toolName.toLowerCase() === 'bash' && typeof state.input?.command === 'string' ? state.input.command : ''
+    const toolTitle = bashRunning && command ? command : (state.title || command)
+    const toolMetrics = toolName.toLowerCase() === 'read' ? readToolMetrics(state)
+      : toolName.toLowerCase() === 'edit' ? editToolMetrics(state) : null
     if (toolName.toLowerCase() === 'question') return (
       <div className="hui-tool-call hui-question-tool" data-tool-color="default">
         <span className="hui-tool-name">Question</span>
@@ -165,13 +253,14 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
       </div>
     )
     return (
-      <details className="hui-tool-call" data-tool-color={toolColor}>
+      <details className="hui-tool-call" data-tool-color={toolColor} data-running={bashRunning}>
         <summary className="hui-tool-summary">
-          <span className="hui-tool-name">{displayName}</span>
+          <span className={`hui-tool-name${imageRead ? ' hui-pic-read' : ''}`}>{displayName}</span>
           <span className="hui-tool-status">
             {state.status ?? 'running'}
           </span>
-          {state.title ? <span className="hui-tool-title" title={String(state.title)}>{state.title}</span> : null}
+          {toolTitle ? <span className="hui-tool-title" title={String(toolTitle)}>{toolTitle}</span> : null}
+          {toolMetrics ? <span className="hui-tool-metrics">{toolMetrics}</span> : null}
         </summary>
         {state.input ? (
           <pre className="hui-code mt-2 max-h-48 overflow-auto">{JSON.stringify(state.input, null, 2)}</pre>
@@ -261,13 +350,17 @@ const MessageView = memo(function MessageView({ msg, inReply = false, visibleCha
   )
 })
 
-const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleChars, liquidGlass }: {
-  msg: MessageEntry
+const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visibleChars, liquidGlass }: {
+  messages: MessageEntry[]
   order: number
   foldedByNext: boolean
   visibleChars?: number
   liquidGlass: boolean
 }): React.ReactElement {
+  const msg = messages.length === 1 ? messages[0] : {
+    info: messages[0].info,
+    parts: messages.flatMap(message => message.parts)
+  }
   const panelId = useId()
   const lens = useLiquidGlassSurface<HTMLElement>(liquidGlass)
   const [expanded, setExpanded] = useState(!foldedByNext)
@@ -281,15 +374,16 @@ const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleCha
     setExpanded(!foldedByNext)
   }, [foldedByNext])
 
-  const tools = new Map<string, { name: string; count: number; color: string }>()
+  const tools = new Map<string, { name: string; count: number; color: string; picRead: boolean }>()
   if (foldedByNext) {
     for (const part of msg.parts) {
       if (part.type !== 'tool') continue
       const name = String(part.tool ?? 'Tool')
-      const key = name.toLowerCase()
+      const imageRead = isImageRead(name, part.state)
+      const key = imageRead ? 'picread' : name.toLowerCase()
       const existing = tools.get(key)
       if (existing) existing.count++
-      else tools.set(key, { name: displayToolName(name), count: 1, color: toolColors[key] ?? 'default' })
+      else tools.set(key, { name: imageRead ? 'PicRead' : displayToolName(name), count: 1, color: toolColors[name.toLowerCase()] ?? 'default', picRead: imageRead })
     }
   }
   return (
@@ -302,7 +396,7 @@ const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleCha
           {tools.size > 0 ? (
             <span className="hui-call-meta">
               调用了 {Array.from(tools, ([key, tool], index) => (
-                <span key={key} className="hui-step-tool" data-tool-color={tool.color}>{index > 0 ? '，' : ''}{tool.count}次 {tool.name}</span>
+                <span key={key} className="hui-step-tool" data-tool-color={tool.color}>{index > 0 ? '，' : ''}{tool.count}次 <span className={tool.picRead ? 'hui-step-tool-name hui-pic-read' : 'hui-step-tool-name'}>{tool.name}</span></span>
               ))}
             </span>
           ) : null}
@@ -316,52 +410,98 @@ const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleCha
       </div>
     </section>
   )
-})
+}, (previous, next) => previous.order === next.order
+  && previous.foldedByNext === next.foldedByNext
+  && previous.visibleChars === next.visibleChars
+  && previous.liquidGlass === next.liquidGlass
+  && previous.messages.length === next.messages.length
+  && previous.messages.every((message, index) => message === next.messages[index]))
 
 const stepRangeSize = 10
 const recentCallCount = 3
 
-function StepRange({ groups, start, liquidGlass }: {
-  groups: MessageEntry[]
+function StepRange({ groups, start, liquidGlass, onExpand }: {
+  groups: MessageEntry[][]
   start: number
   liquidGlass: boolean
+  onExpand: () => void
 }): React.ReactElement {
   const [expanded, setExpanded] = useState(false)
   const [mounted, setMounted] = useState(false)
+  const [preparing, setPreparing] = useState(false)
+  const contentRef = useRef<HTMLDivElement>(null)
   const panelId = useId()
+  const measureStack = (): void => {
+    const content = contentRef.current
+    if (!content) return
+    for (const [index, item] of Array.from(content.children as HTMLCollectionOf<HTMLElement>).entries()) {
+      item.style.setProperty('--range-start', `${index < 3 ? -Math.max(0, item.offsetTop - 3) : -14}px`)
+    }
+  }
+  useLayoutEffect(() => {
+    if (!mounted) return
+    // Each card starts beneath the summary, then moves to its own measured
+    // position. This also works when a child step has been expanded by hand.
+    measureStack()
+    let secondFrame = 0
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        setPreparing(false)
+        setExpanded(true)
+      })
+    })
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      window.cancelAnimationFrame(secondFrame)
+    }
+  }, [mounted])
   useEffect(() => {
     if (expanded || !mounted) return
-    const timer = window.setTimeout(() => setMounted(false), 500)
+    const timer = window.setTimeout(() => setMounted(false), 760)
     return () => window.clearTimeout(timer)
   }, [expanded, mounted])
 
-  const tools = new Map<string, { name: string; count: number; color: string }>()
-  for (const message of groups) for (const part of message.parts) {
+  const tools = new Map<string, { name: string; count: number; color: string; picRead: boolean }>()
+  for (const messages of groups) for (const message of messages) for (const part of message.parts) {
     if (part.type !== 'tool') continue
     const name = String(part.tool ?? 'Tool')
-    const key = name.toLowerCase()
+    const picRead = isImageRead(name, part.state)
+    const key = picRead ? 'picread' : name.toLowerCase()
     const existing = tools.get(key)
     if (existing) existing.count++
-    else tools.set(key, { name: displayToolName(name), count: 1, color: toolColors[key] ?? 'default' })
+    else tools.set(key, { name: toolDisplayName(name, part.state), count: 1, color: toolColors[name.toLowerCase()] ?? 'default', picRead })
   }
   const topTools = [...tools.values()].sort((a, b) => b.count - a.count).slice(0, 3)
   const remainingKinds = Math.max(0, tools.size - topTools.length)
 
   return (
-    <section className="hui-step-range" data-start={start + 1} data-end={start + groups.length} data-expanded={expanded}>
+    <section className="hui-step-range" data-start={start + 1} data-end={start + groups.length} data-expanded={expanded} data-preparing={preparing}>
       <button className="hui-step-range-header" type="button" aria-expanded={expanded} aria-controls={panelId}
-        onClick={() => { if (!expanded) setMounted(true); setExpanded(value => !value) }}>
+        onClick={() => {
+          if (expanded) { measureStack(); setExpanded(false) }
+          else {
+            onExpand()
+            if (mounted) { setPreparing(false); setExpanded(true) }
+            else { setPreparing(true); setMounted(true) }
+          }
+        }}>
         <span className="hui-call-chevron" aria-hidden="true" />
         <span className="hui-call-heading">步骤 {start + 1}–{start + groups.length}</span>
         <span className="hui-call-meta">{groups.length} 步{topTools.length ? ' · ' : ''}{topTools.map((tool, index) => (
-          <span key={tool.name} className="hui-step-tool" data-tool-color={tool.color}>{index ? '，' : ''}{tool.count}次 {tool.name}</span>
+          <span key={tool.name} className="hui-step-tool" data-tool-color={tool.color}>{index ? '，' : ''}{tool.count}次 <span className={tool.picRead ? 'hui-step-tool-name hui-pic-read' : 'hui-step-tool-name'}>{tool.name}</span></span>
         ))}{remainingKinds ? `，另 ${remainingKinds} 种` : ''}</span>
         <span className="hui-call-state">{expanded ? '收起' : '展开'}</span>
       </button>
       <div className="hui-step-range-reveal" aria-hidden={!expanded} inert={!expanded}>
-        <div id={panelId} className="hui-step-range-content">
-          {mounted ? groups.map((msg, index) => (
-            <CallBlock key={msg.info?.id ?? start + index} msg={msg} order={start + index + 1} foldedByNext liquidGlass={liquidGlass} />
+        <div id={panelId} ref={contentRef} className="hui-step-range-content">
+          {mounted ? groups.map((messages, index) => (
+            <div className="hui-step-range-item" style={{
+              '--range-index': index,
+              '--range-move-delay': `${index < 3 ? index * 35 : 0}ms`,
+              '--range-appear-delay': `${index < 3 ? [45, 175, 275][index] : 285 + (index - 3) * 25}ms`
+            } as CSSProperties} key={messages[0].info?.id ?? start + index}>
+              <CallBlock messages={messages} order={start + index + 1} foldedByNext liquidGlass={liquidGlass} />
+            </div>
           )) : null}
         </div>
       </div>
@@ -369,11 +509,12 @@ function StepRange({ groups, start, liquidGlass }: {
   )
 }
 
-function StepList({ groups, visibleChars, liquidGlass, canCompact }: {
-  groups: MessageEntry[]
+function StepList({ groups, visibleChars, liquidGlass, canCompact, onExpandRange }: {
+  groups: MessageEntry[][]
   visibleChars?: number
   liquidGlass: boolean
   canCompact: boolean
+  onExpandRange: () => void
 }): React.ReactElement {
   // Full ten-step ranges stay anchored to the start of this reply. Keep the
   // newest calls visible and postpone new compaction while history is read.
@@ -385,11 +526,11 @@ function StepList({ groups, visibleChars, liquidGlass, canCompact }: {
 
   const items: React.ReactNode[] = []
   for (let start = 0; start < compacted; start += stepRangeSize) {
-    items.push(<StepRange key={`range-${start}`} groups={groups.slice(start, start + stepRangeSize)} start={start} liquidGlass={liquidGlass} />)
+    items.push(<StepRange key={`range-${start}`} groups={groups.slice(start, start + stepRangeSize)} start={start} liquidGlass={liquidGlass} onExpand={onExpandRange} />)
   }
   for (let index = compacted; index < groups.length; index++) {
-    const msg = groups[index]
-    items.push(<CallBlock key={msg.info?.id ?? index} msg={msg} order={index + 1} foldedByNext={index < groups.length - 1} visibleChars={index === groups.length - 1 ? visibleChars : undefined} liquidGlass={liquidGlass} />)
+    const messages = groups[index]
+    items.push(<CallBlock key={messages[0].info?.id ?? index} messages={messages} order={index + 1} foldedByNext={index < groups.length - 1} visibleChars={index === groups.length - 1 ? visibleChars : undefined} liquidGlass={liquidGlass} />)
   }
   return <>{items}</>
 }
@@ -536,6 +677,9 @@ export default function App(): React.ReactElement {
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null)
   const [agents, setAgents] = useState<any[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
+  const [commands, setCommands] = useState<CommandOption[]>([])
+  const [slashHighlight, setSlashHighlight] = useState(0)
+  const [slashDismissed, setSlashDismissed] = useState(false)
   const [followingReply, setFollowingReply] = useState(true)
 
   const clientRef = useRef<any>(null)
@@ -549,6 +693,7 @@ export default function App(): React.ReactElement {
   const contentRef = useRef<HTMLDivElement | null>(null)
   const stickBottom = useRef(true)
   const userScrolling = useRef(false)
+  const rangeReading = useRef(false)
   const deletedSessions = useRef(new Set<string>())
   const sessionListVersion = useRef(0)
   const deletingRef = useRef<{ client: any; id: string } | null>(null)
@@ -596,6 +741,26 @@ export default function App(): React.ReactElement {
     }
     return Array.from(map.entries())
   }, [models])
+
+  // Slash commands open a frosted menu while the user is still typing the
+  // command name (there is no whitespace yet). Escape hides it until the next
+  // edit, and completing an entry keeps the textarea focused for arguments.
+  const slashMatch = /^\/(\S*)$/.exec(input)
+  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null
+  const slashResults = useMemo(() => slashQuery === null
+    ? []
+    : commands.filter(command => command.name.toLowerCase().includes(slashQuery)).slice(0, 8),
+    [slashQuery, commands])
+  const slashOpen = slashQuery !== null && !slashDismissed && slashResults.length > 0
+
+  useEffect(() => { setSlashHighlight(0) }, [slashQuery, commands])
+  useEffect(() => { setSlashDismissed(false) }, [input])
+
+  const applyCommand = useCallback((command: CommandOption) => {
+    setInput(`/${command.name} `)
+    setSlashDismissed(true)
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }, [])
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -692,7 +857,9 @@ export default function App(): React.ReactElement {
             providerID: p.id,
             providerName: p.name ?? p.id,
             modelID: mid,
-            modelName: (m as any)?.name ?? mid
+            modelName: (m as any)?.name ?? mid,
+            contextLimit: Number((m as any)?.limit?.context) || 0,
+            outputLimit: Number((m as any)?.limit?.output) || 0
           })
         }
       }
@@ -728,6 +895,18 @@ export default function App(): React.ReactElement {
           ? savedAgent
           : (primary.find((a: any) => a.name === 'build')?.name ?? primary[0]?.name ?? null)
       setSelectedAgent(defAgent)
+
+      try {
+        const cmdRes = await c.command.list({ query: { directory: workspaceRef.current ?? undefined } })
+        if (c !== clientRef.current) return
+        const builtinNames = new Set(builtinCommands.map(command => command.name))
+        const loaded: CommandOption[] = (unwrap(cmdRes) ?? [])
+          .filter((cmd: any) => typeof cmd?.name === 'string' && cmd.name.length > 0)
+          .map((cmd: any) => ({ name: cmd.name, description: cmd.description }))
+        setCommands([...builtinCommands, ...loaded.filter(command => !builtinNames.has(command.name))])
+      } catch (e) {
+        console.error('load commands failed', e)
+      }
     } catch (e) {
       console.error('load config failed', e)
     }
@@ -837,6 +1016,7 @@ export default function App(): React.ReactElement {
       setBusy(false)
       setLastError(null)
       stickBottom.current = true
+      rangeReading.current = false
       setFollowingReply(true)
     }
   }, [clearEvents])
@@ -903,10 +1083,13 @@ export default function App(): React.ReactElement {
     setAgents([])
     setSelectedModel(null)
     setSelectedAgent(null)
+    setCommands([])
+    setSlashDismissed(false)
     setBusy(false)
     setInput('')
     setLastError(null)
     stickBottom.current = true
+    rangeReading.current = false
     setFollowingReply(true)
   }, [clearEvents, closeSessionMenu])
 
@@ -1092,6 +1275,8 @@ export default function App(): React.ReactElement {
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
+    if (rangeReading.current && !userScrolling.current) return
+    if (userScrolling.current) rangeReading.current = false
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
     // Height changes/programmatic scrolling also emit scroll events. They must
     // not disable following the reply before the ResizeObserver can catch up.
@@ -1129,6 +1314,16 @@ export default function App(): React.ReactElement {
     const c = clientRef.current
     if ((!text && attachments.length === 0) || !c || !server?.url || busy) return
 
+    // A leading slash runs a configured command instead of a plain prompt.
+    const commandMatch = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
+    const command = commandMatch
+      ? commands.find(item => item.name.toLowerCase() === commandMatch[1].toLowerCase())
+      : undefined
+    if (command && attachments.length > 0) {
+      setLastError('斜杠命令不支持同时发送附件')
+      return
+    }
+
     const body: any = { parts: [
       ...(text ? [{ type: 'text', text }] : []),
       ...attachments.map(file => ({ type: 'file', mime: file.mime, filename: file.name, url: file.url }))
@@ -1141,6 +1336,7 @@ export default function App(): React.ReactElement {
     setBusy(true)
     setLastError(null)
     stickBottom.current = true
+    rangeReading.current = false
     setFollowingReply(true)
 
     try {
@@ -1160,7 +1356,11 @@ export default function App(): React.ReactElement {
       }
       if (c !== clientRef.current) return
       if (!id) { setBusy(false); return }
-      await c.session.promptAsync({ path: { id }, body, throwOnError: true })
+      if (command) {
+        await c.session.command({ path: { id }, body: { command: command.name, arguments: commandMatch?.[2] ?? '' }, throwOnError: true })
+      } else {
+        await c.session.promptAsync({ path: { id }, body, throwOnError: true })
+      }
       if (c === clientRef.current && id === activeIdRef.current) {
         setInput(previous => previous === input ? '' : previous)
         setAttachments(previous => previous.filter(file => !attachments.some(sent => sent.id === file.id)))
@@ -1269,6 +1469,32 @@ export default function App(): React.ReactElement {
   const visibleMessages = useMemo(() => reverted && reverted.sessionId === activeId
     ? messages.filter(message => !reverted.hiddenIds.has(message.info?.id))
     : messages, [messages, reverted, activeId])
+
+  // Context occupancy: find the latest assistant message that actually reported
+  // token usage. A fresh assistant entry or a step before its first usage event
+  // carries an empty/zero `tokens` report; treating that as real usage is what
+  // made the meter flicker between a number and 0.
+  const contextUsage = useMemo(() => {
+    const total = (tokens: any): number => tokens
+      ? Number(tokens.input ?? 0) + Number(tokens.output ?? 0) + Number(tokens.cache?.read ?? 0) + Number(tokens.cache?.write ?? 0)
+      : 0
+    const last = [...visibleMessages].reverse().find(message =>
+      message.info?.role === 'assistant' && total(message.info?.tokens) > 0)
+    const used = total(last?.info?.tokens)
+    // Prefer the model that produced the last reply over whatever is currently
+    // selected in the composer: sessions may each use a different model.
+    const providerID = last?.info?.providerID ?? selectedModel?.providerID
+    const modelID = last?.info?.modelID ?? selectedModel?.modelID
+    const max = models.find(model => model.providerID === providerID && model.modelID === modelID)?.contextLimit ?? 0
+    const percent = max > 0 ? Math.min(100, (used / max) * 100) : 0
+    return { used, max, percent }
+  }, [visibleMessages, models, selectedModel])
+
+  const contextLevel = contextUsage.percent >= 90 ? 'high' : contextUsage.percent >= 70 ? 'medium' : 'low'
+  const contextPercentLabel = contextUsage.max > 0
+    ? `${contextUsage.percent >= 10 ? Math.round(contextUsage.percent) : contextUsage.percent >= 0.5 ? contextUsage.percent.toFixed(1) : 0}%`
+    : '—'
+
   const lastUser = [...visibleMessages].reverse().find((message) => message.info?.role === 'user')
   const awaitingUserEcho = busy && (lastUser?.info?.id ?? null) === beforeRequestUserId.current
   if (busy && !awaitingUserEcho && lastUser?.info?.id && pendingTurnKey.current) {
@@ -1284,11 +1510,17 @@ export default function App(): React.ReactElement {
     const visible = turnReplies.some((message) => message.parts.some(hasVisiblePart))
     if (!visible && !waiting) return
     const replies = turnReplies.filter(message => message.parts.some(hasVisiblePart))
-    const textLength = replies.at(-1)?.parts.reduce((count, part) =>
+    const groups: MessageEntry[][] = []
+    for (const message of replies) {
+      const parts = message.parts.filter(hasVisiblePart)
+      if (groups.length > 0 && parts.every(part => part.type === 'tool')) groups[groups.length - 1].push(message)
+      else groups.push([message])
+    }
+    const textLength = groups.at(-1)?.flatMap(group => group.parts).reduce((count, part) =>
       count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
     conversation.push(
       <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength} liquidGlass={liquidGlass}>
-        {(visibleChars) => <StepList groups={replies} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} />}
+        {(visibleChars) => <StepList groups={groups} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} onExpandRange={() => { rangeReading.current = true; stickBottom.current = false; setFollowingReply(false) }} />}
       </ReplyPresentation>
     )
   }
@@ -1307,6 +1539,43 @@ export default function App(): React.ReactElement {
     conversation.push(<ReplyPresentation key={pendingTurnKey.current ?? 'reply-pending'} waiting liquidGlass={liquidGlass} />)
   }
 
+  // Runs a client-side built-in command, or falls through to a normal prompt
+  // (which itself may dispatch a user-defined `/command`).
+  const submit = async (): Promise<void> => {
+    const match = /^\/(\S+)(?:\s+[\s\S]*)?$/.exec(input.trim())
+    const builtin = match ? builtinCommands.find(item => item.name === match[1].toLowerCase()) : undefined
+    if (!builtin) { await send(); return }
+    if (busy || !server?.url) return
+    setSlashDismissed(true)
+    setInput('')
+    setLastError(null)
+    const c = clientRef.current
+    const sessionId = activeIdRef.current
+    if (builtin.name === 'new') { await newSession(); return }
+    if (!c || !sessionId) { setLastError('请先开始一段对话再使用该命令'); return }
+    if (builtin.name === 'compact') {
+      if (!selectedModel) { setLastError('请先选择模型再压缩上下文'); return }
+      setBusy(true)
+      try {
+        await c.session.summarize({ path: { id: sessionId }, body: selectedModel, throwOnError: true })
+        if (c === clientRef.current && sessionId === activeIdRef.current) refreshMessages()
+      } catch (error) {
+        if (c === clientRef.current) setLastError(`压缩失败：${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        if (c === clientRef.current) setBusy(false)
+      }
+      return
+    }
+    if (builtin.name === 'undo') {
+      if (!lastUser) { setLastError('没有可撤回的用户消息'); return }
+      await revertMessage(lastUser)
+      return
+    }
+    if (builtin.name === 'redo') {
+      if (!(reverted && reverted.sessionId === activeId)) { setLastError('当前没有可恢复的撤回'); return }
+      await restoreReverted()
+    }
+  }
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
@@ -1407,6 +1676,28 @@ export default function App(): React.ReactElement {
                 </label>
               </div>
             ) : null}
+          </div>
+          <div
+            className="hui-context-meter no-drag ml-1"
+            role="status"
+            data-level={contextLevel}
+            aria-label={`上下文占用 ${contextPercentLabel}`}
+            title={contextUsage.max > 0
+              ? `上下文：已用 ${contextUsage.used.toLocaleString()} / 上限 ${contextUsage.max.toLocaleString()} tokens`
+              : '当前模型未提供上下文上限'}
+          >
+            <svg className="hui-context-ring" viewBox="0 0 36 36" aria-hidden="true">
+              <circle className="hui-context-ring-track" cx="18" cy="18" r={contextRingRadius} />
+              <circle
+                className="hui-context-ring-fill"
+                cx="18"
+                cy="18"
+                r={contextRingRadius}
+                strokeDasharray={contextRingCircumference}
+                strokeDashoffset={contextRingCircumference * (1 - contextUsage.percent / 100)}
+              />
+            </svg>
+            <span className="hui-context-percent">{contextPercentLabel}</span>
           </div>
           <button
             onClick={() => window.api.window.minimize()}
@@ -1544,6 +1835,7 @@ export default function App(): React.ReactElement {
                 </button>
               </div>
             ) : null}
+            <div className="relative">
             <div className="hui-composer glass-soft rounded-2xl p-2" data-dragging={draggingFiles}
               onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDraggingFiles(true) } }}
               onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }}
@@ -1565,15 +1857,23 @@ export default function App(): React.ReactElement {
                   if (files.length) { event.preventDefault(); void addFiles(files) }
                 }}
                 onKeyDown={(e) => {
+                  if (slashOpen) {
+                    const last = slashResults.length - 1
+                    const current = Math.min(slashHighlight, last)
+                    if (e.key === 'ArrowDown') { e.preventDefault(); setSlashHighlight((current + 1) % slashResults.length); return }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); setSlashHighlight((current - 1 + slashResults.length) % slashResults.length); return }
+                    if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); applyCommand(slashResults[current]); return }
+                    if (e.key === 'Escape') { e.preventDefault(); setSlashDismissed(true); return }
+                  }
                   if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault()
-                    void send()
+                    void submit()
                   }
                 }}
                 rows={1}
                 placeholder={
                   server?.status === 'ready'
-                    ? '输入消息… (Enter 发送 / Shift+Enter 换行)'
+                    ? '输入消息… (Enter 发送 / Shift+Enter 换行 / 输入 / 使用命令)'
                     : '等待 opencode 启动…'
                 }
                 disabled={server?.status !== 'ready' || !workspace}
@@ -1615,7 +1915,7 @@ export default function App(): React.ReactElement {
                   </button>
                 ) : (
                   <button
-                    onClick={() => void send()}
+                    onClick={() => void submit()}
                     disabled={(!input.trim() && attachments.length === 0) || server?.status !== 'ready' || !workspace}
                     className="rounded-xl bg-white/90 px-4 py-2 text-[13px] font-semibold text-slate-900 transition hover:bg-white disabled:opacity-40"
                   >
@@ -1623,6 +1923,29 @@ export default function App(): React.ReactElement {
                   </button>
                 )}
               </div>
+            </div>
+            {slashOpen ? (
+              <div className="hui-slash-menu" role="listbox" aria-label="斜杠命令">
+                <div className="hui-slash-scroll">
+                  {slashResults.map((command, index) => (
+                    <button
+                      key={command.name}
+                      type="button"
+                      role="option"
+                      aria-selected={index === slashHighlight}
+                      className="hui-slash-option"
+                      data-focused={index === slashHighlight}
+                      onMouseEnter={() => setSlashHighlight(index)}
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => applyCommand(command)}
+                    >
+                      <span className="hui-slash-name">/{command.name}</span>
+                      {command.description ? <span className="hui-slash-desc">{command.description}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             </div>
           </div>
           {questions[0] && questions[0].sessionID === activeId ? <QuestionDialog key={questions[0].id} request={questions[0]} busy={answeringQuestion} onReply={answers => void resolveQuestion(questions[0], answers)} onReject={() => void resolveQuestion(questions[0])} /> : null}

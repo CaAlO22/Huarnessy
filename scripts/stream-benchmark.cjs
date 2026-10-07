@@ -287,7 +287,11 @@ app.whenReady().then(async () => {
     // Install the fake kernel before React loads. No real sessions or model requests.
     if (process.env.BENCH_FILE) await window.loadFile(process.env.BENCH_FILE)
     else await window.loadURL(process.env.BENCH_URL + '?benchmark')
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const ready = await window.webContents.executeJavaScript(`!!Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark')`).catch(() => false)
+      if (ready) break
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
     await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
     await new Promise(resolve => setTimeout(resolve, 100))
     if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ replyUI: await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})()`) }))
@@ -304,7 +308,10 @@ app.whenReady().then(async () => {
       await new Promise(resolve => setTimeout(resolve, 120))
       await writeFile(previewPath('step-ranges-collapsed-preview.png'), (await window.webContents.capturePage()).toPNG())
       await window.webContents.executeJavaScript(`document.querySelector('.hui-step-range[data-start="11"] .hui-step-range-header').click()`)
-      await new Promise(resolve => setTimeout(resolve, 550))
+      await new Promise(resolve => setTimeout(resolve, 220))
+      await window.webContents.executeJavaScript(`document.querySelector('.hui-step-range[data-start="11"]').scrollIntoView({ block: 'start' })`)
+      await writeFile(previewPath('step-ranges-unstacking-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await new Promise(resolve => setTimeout(resolve, 500))
       await window.webContents.executeJavaScript(`(() => {
         const scroll = document.querySelector('.hui-chat-scroll')
         scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -300, bubbles: true }))
@@ -312,6 +319,10 @@ app.whenReady().then(async () => {
       })()`)
       await new Promise(resolve => setTimeout(resolve, 100))
       await writeFile(previewPath('step-ranges-expanded-preview.png'), (await window.webContents.capturePage()).toPNG())
+      if (process.env.BENCH_STEP_PREVIEW_ONLY) {
+        console.log(JSON.stringify({ previewRun: screenshotRunId }))
+        return
+      }
       await window.webContents.executeJavaScript(`(() => { window.benchEmit('message.removed', { sessionID: 'benchmark-session', messageID: 'range-user' }); for (let index = 1; index <= 23; index++) window.benchEmit('message.removed', { sessionID: 'benchmark-session', messageID: 'range-' + index }) })()`)
       await new Promise(resolve => setTimeout(resolve, 100))
       await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})(true)`)

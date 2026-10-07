@@ -2,6 +2,8 @@
 
 开始修改前阅读 [AgentReadme.md](./AgentReadme.md)，其中包含架构、运行方式、流式渲染设计和已知问题。
 
+可能会存在多个Agent同时在优化本项目的情况，所以当遇到冲突时，也请注意并态问题。
+
 ## 项目约束
 
 - 本项目是 Electron + React 的 opencode 图形客户端，通过本地 HTTP/SSE 服务连接内核。

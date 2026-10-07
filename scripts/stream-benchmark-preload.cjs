@@ -44,6 +44,11 @@ window.fetch = async (url, options) => {
     return new Response(JSON.stringify(session), { headers: { 'Content-Type': 'application/json' } })
   }
   if (path.endsWith('/prompt_async')) return new Response(null, { status: 204 })
+  if (path.endsWith('/command') && method === 'POST') {
+    const id = path.split('/')[2]
+    return new Response(JSON.stringify({ info: { id: 'command-message', sessionID: id, role: 'assistant' }, parts: [] }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  if (path.endsWith('/summarize') && method === 'POST') return new Response('true', { headers: { 'Content-Type': 'application/json' } })
   if (path === '/question' && method === 'GET') return new Response(JSON.stringify(window.benchQuestions), { headers: { 'Content-Type': 'application/json' } })
   if (/^\/question\/[^/]+\/(reply|reject)$/.test(path)) {
     const id = decodeURIComponent(path.split('/')[2])
@@ -85,13 +90,55 @@ window.fetch = async (url, options) => {
     data = window.benchMessages[id] ?? []
     if (window.benchHoldMessages === id) await new Promise(resolve => { window.benchReleaseMessages = resolve })
   }
-  else if (path === '/config/providers') data = { providers: [{ id: 'test', name: '测试模型', models: { alpha: { name: 'Alpha' }, beta: { name: 'Beta' } } }] }
+  else if (path === '/config/providers') data = { providers: [{ id: 'test', name: '测试模型', models: {
+    alpha: { name: 'Alpha', limit: { context: 200000, output: 32000 } },
+    beta: { name: 'Beta', limit: { context: 128000, output: 16000 } }
+  } }] }
   else if (path === '/app/agents') data = [{ name: 'build', mode: 'primary' }, { name: 'plan', mode: 'primary' }]
   else if (path === '/config') data = {}
+  else if (path === '/command') data = [
+    { name: 'init', description: '分析项目并生成 AGENTS.md', template: '' },
+    { name: 'compact', description: '压缩当前会话的上下文', template: '' },
+    { name: 'review', description: '审查当前改动', template: '' }
+  ]
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
 }
 window.EventSource = class {
   constructor(url) { this.url = url; window.benchSources.push(this); window.benchSource = this }
   close() { this.closed = true }
 }
-window.benchEmit = (type, properties) => window.benchSource.onmessage({ data: JSON.stringify({ type, properties }) })
+window.benchEmit = (type, properties) => {
+  // Mirror the real kernel by persisting streamed messages. Without this a
+  // post-idle message refetch would replace client state with an empty snapshot
+  // and discard anything a test pushed over SSE.
+  const sessionID = properties?.sessionID ?? properties?.info?.sessionID ?? properties?.part?.sessionID
+  if (sessionID) {
+    const list = window.benchMessages[sessionID] ?? (window.benchMessages[sessionID] = [])
+    if (type === 'message.updated' && properties?.info?.id) {
+      const i = list.findIndex(message => message.info?.id === properties.info.id)
+      if (i === -1) list.push({ info: { ...properties.info }, parts: [] })
+      else list[i] = { ...list[i], info: { ...list[i].info, ...properties.info } }
+    } else if (type === 'message.part.updated' && properties?.part?.messageID) {
+      const messageID = properties.part.messageID
+      let i = list.findIndex(message => message.info?.id === messageID)
+      if (i === -1) { list.push({ info: { id: messageID, sessionID, role: 'assistant' }, parts: [] }); i = list.length - 1 }
+      const j = list[i].parts.findIndex(part => part.id === properties.part.id)
+      if (j === -1) list[i].parts.push({ ...properties.part })
+      else list[i].parts[j] = { ...properties.part }
+    } else if (type === 'message.part.delta' && properties?.messageID && properties?.partID && typeof properties.field === 'string') {
+      const messageID = properties.messageID
+      let i = list.findIndex(message => message.info?.id === messageID)
+      if (i === -1) { list.push({ info: { id: messageID, sessionID, role: 'assistant' }, parts: [] }); i = list.length - 1 }
+      const j = list[i].parts.findIndex(part => part.id === properties.partID)
+      if (j === -1) list[i].parts.push({ id: properties.partID, messageID, sessionID, type: properties.field === 'text' ? 'text' : properties.field, [properties.field]: properties.delta })
+      else list[i].parts[j] = { ...list[i].parts[j], [properties.field]: (list[i].parts[j][properties.field] ?? '') + properties.delta }
+    } else if (type === 'message.part.removed' && properties?.messageID) {
+      const i = list.findIndex(message => message.info?.id === properties.messageID)
+      if (i !== -1) list[i] = { ...list[i], parts: list[i].parts.filter(part => part.id !== properties.partID) }
+    } else if (type === 'message.removed' && properties?.messageID) {
+      const i = list.findIndex(message => message.info?.id === properties.messageID)
+      if (i !== -1) list.splice(i, 1)
+    }
+  }
+  window.benchSource.onmessage({ data: JSON.stringify({ type, properties }) })
+}
