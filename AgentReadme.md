@@ -100,6 +100,7 @@ npm run app          # 从 out/ 的独立快照启动，不监听源码（用于
 npm run app:build    # 先构建再按快照启动
 npm run test:stream  # 假内核驱动的 Electron 流式性能与功能回归
 npm run test:workspace # 工作空间设置与目录隔离的单元验证
+npm run package:release # 构建并组装 release/Huarnessy-v<版本>-win-x64 便携发行版
 ```
 
 - `npm run dev` 会监听 `src/`：改渲染层触发 HMR 重载、改主进程直接重启 Electron。若正用该窗口与本项目对话，源码改动会打断当前窗口。需要一边改源码一边保持对话窗口存活时，用 `npm run app`（或 `npm run app:build`）：`scripts/run-standalone.mjs` 把 `out/` 拷贝到仓库外的稳定目录（Windows 为 `%LOCALAPPDATA%\Huarnessy\standalone`）再启动，之后 `npm run build` 覆盖仓库内 `out/` 不会影响运行中的实例。该快照仍是独立进程，带自己的 `opencode serve` 内核，与 VSCode 内的 opencode 实例互不影响。要看到新的源码改动，需重新执行 `npm run app:build` 并接受新窗口替换旧窗口。
