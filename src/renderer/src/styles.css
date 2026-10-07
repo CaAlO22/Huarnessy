@@ -700,41 +700,55 @@ body {
   --tool-surface: rgba(145, 101, 215, calc(0.27 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(184, 143, 244, 0.34);
 }
-@property --hui-bash-light-angle {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-.hui-tool-call[data-tool-color='shell'][data-running='true'] {
+/* Running tools get a fixed-length beam that rolls along the border. The
+   dash pattern length equals the measured perimeter (--hui-perimeter), so
+   the beam never stretches with the bubble and loops seamlessly. */
+.hui-tool-call[data-running='true'] {
   position: relative;
   isolation: isolate;
 }
-.hui-tool-call[data-tool-color='shell'][data-running='true']::before,
-.hui-tool-call[data-tool-color='shell'][data-running='true']::after {
+.hui-tool-beam {
+  position: absolute;
+  inset: -2px;
+  width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  overflow: visible;
+  pointer-events: none;
+  color: var(--tool-accent);
+  filter: drop-shadow(0 0 5px currentColor);
+}
+.hui-tool-beam rect {
+  x: 1.5px;
+  y: 1.5px;
+  width: calc(100% - 3px);
+  height: calc(100% - 3px);
+  rx: 13px;
+  fill: none;
+  stroke: color-mix(in srgb, var(--tool-accent), #ffffff 55%);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: calc(var(--hui-beam-length, 150) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-beam-length, 150)) * 1px);
+  animation: hui-tool-beam-run var(--hui-beam-duration, 2.6s) linear infinite;
+}
+@keyframes hui-tool-beam-run { to { stroke-dashoffset: calc(var(--hui-perimeter, 900) * -1px); } }
+/* One-shot ring flash when a running tool finishes. */
+.hui-tool-call[data-flash='true'] { position: relative; }
+.hui-tool-call[data-flash='true']::after {
   content: '';
   position: absolute;
-  pointer-events: none;
-  border-radius: 14px;
-  background: conic-gradient(from var(--hui-bash-light-angle), transparent 0deg 270deg, rgba(205, 159, 255, .35) 305deg, #e8ceff 332deg, transparent 360deg);
-  animation: hui-bash-light-orbit 1.15s linear infinite;
-}
-.hui-tool-call[data-tool-color='shell'][data-running='true']::before {
   inset: -2px;
-  padding: 2px;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
+  border-radius: 14px;
+  pointer-events: none;
+  border: 1.5px solid color-mix(in srgb, var(--tool-accent), #ffffff 45%);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--tool-accent), transparent 40%),
+    inset 0 0 10px color-mix(in srgb, var(--tool-accent), transparent 72%);
+  animation: hui-tool-flash .7s ease-out forwards;
 }
-.hui-tool-call[data-tool-color='shell'][data-running='true']::after {
-  inset: -4px;
-  padding: 4px;
-  opacity: .7;
-  filter: blur(5px);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
+@keyframes hui-tool-flash {
+  0% { opacity: 0; }
+  18% { opacity: .95; }
+  100% { opacity: 0; }
 }
-@keyframes hui-bash-light-orbit { to { --hui-bash-light-angle: 360deg; } }
 .hui-tool-call[data-tool-color='task'],
 .hui-step-tool[data-tool-color='task'] {
   --tool-accent: #f2a9d8;
@@ -797,8 +811,8 @@ body {
 }
 .hui-tool-call .hui-code { max-width: 100%; }
 @media (prefers-reduced-motion: reduce) {
-  .hui-tool-call[data-tool-color='shell'][data-running='true']::before,
-  .hui-tool-call[data-tool-color='shell'][data-running='true']::after { animation: none; }
+  .hui-tool-beam rect { animation: none; }
+  .hui-tool-call[data-flash='true']::after { animation: none; opacity: 0; }
 }
 
 /* The regular bubble surface needs no second blur; the optional lens uses an

@@ -218,8 +218,52 @@ const editToolMetrics = (state: any): string | null => {
   return `新增 ${added} 行 · 移除 ${removed} 行`
 }
 
+// A fixed-length light beam that rolls along the tool bubble border. The
+// perimeter is measured so the dash pattern tiles seamlessly and the beam
+// keeps a constant pixel length and speed regardless of bubble width.
+const ToolBeam = (): React.ReactElement => {
+  const ref = useRef<SVGSVGElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const measure = (): void => {
+      const box = el.getBoundingClientRect()
+      const rx = 13
+      const w = Math.max(2 * rx, box.width - 3)
+      const h = Math.max(2 * rx, box.height - 3)
+      const perimeter = 2 * (w - 2 * rx) + 2 * (h - 2 * rx) + 2 * Math.PI * rx
+      el.style.setProperty('--hui-perimeter', perimeter.toFixed(2))
+      el.style.setProperty('--hui-beam-duration', `${(perimeter / 320).toFixed(2)}s`)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  return (
+    <svg ref={ref} className="hui-tool-beam" aria-hidden="true">
+      <rect />
+    </svg>
+  )
+}
+
 const PartView = memo(function PartView({ part, completed, textLimit }: { part: any; completed: boolean; textLimit?: number }): React.ReactElement | null {
   const done = completed || part.time?.end != null
+  const toolKey = part.type === 'tool' ? String(part.tool ?? '').toLowerCase() : ''
+  const toolRunning = part.type === 'tool'
+    && (toolKey === 'bash' || toolColors[toolKey] === 'web')
+    && (part.state ?? {}).status === 'running'
+  const [flash, setFlash] = useState(false)
+  const wasRunningRef = useRef(false)
+  useEffect(() => {
+    if (wasRunningRef.current && !toolRunning) setFlash(true)
+    wasRunningRef.current = toolRunning
+  }, [toolRunning])
+  useEffect(() => {
+    if (!flash) return
+    const timer = setTimeout(() => setFlash(false), 800)
+    return () => clearTimeout(timer)
+  }, [flash])
   let text: string = part.text ?? ''
   if (textLimit !== undefined && textLimit < text.length) {
     let end = Math.max(0, textLimit)
@@ -244,11 +288,11 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
   if (part.type === 'tool') {
     const state = part.state ?? {}
     const toolName = String(part.tool ?? 'Tool')
-    const toolColor = toolColors[toolName.toLowerCase()] ?? 'default'
+    const toolColor = toolColors[toolKey] ?? 'default'
     const imageRead = isImageRead(toolName, state)
     const displayName = imageRead ? 'PicRead' : displayToolName(toolName)
-    const bashRunning = toolName.toLowerCase() === 'bash' && state.status === 'running'
-    const command = toolName.toLowerCase() === 'bash' && typeof state.input?.command === 'string' ? state.input.command : ''
+    const bashRunning = toolKey === 'bash'
+    const command = bashRunning && typeof state.input?.command === 'string' ? state.input.command : ''
     const toolTitle = bashRunning && command ? command : (state.title || command)
     const toolMetrics = toolName.toLowerCase() === 'read' ? readToolMetrics(state)
       : toolName.toLowerCase() === 'edit' ? editToolMetrics(state) : null
@@ -260,8 +304,9 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
       </div>
     )
     return (
-      <details className="hui-tool-call" data-tool-color={toolColor} data-running={bashRunning}>
+      <details className="hui-tool-call" data-tool-color={toolColor} data-running={toolRunning} data-flash={flash}>
         <summary className="hui-tool-summary">
+          {toolRunning ? <ToolBeam /> : null}
           <span className={`hui-tool-name${imageRead ? ' hui-pic-read' : ''}`}>{displayName}</span>
           <span className="hui-tool-status">
             {state.status ?? 'running'}
