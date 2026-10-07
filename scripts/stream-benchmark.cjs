@@ -18,7 +18,7 @@ const run = async (kind, scale = 1) => {
       ? '这是没有空行的长段落，包含 **强调**、`inline code` 与实时流式输出。'.repeat(160 * scale)
       : kind === 'code'
         ? '```typescript\n' + 'const value = "实时流式输出";\n'.repeat(400 * scale) + '```\n'
-      : Array.from({ length: 80 * scale }, (_, i) => `## 段落 ${i}\n\n流式 **Markdown** 与 $x^2$。\n\n`).join('')
+      : '$\\frac{1}{1-\\frac{1}{2}z^{-1}}$\n\n' + Array.from({ length: 80 * scale }, (_, i) => `## 段落 ${i}\n\n流式 **Markdown** 与 $x^2$。\n\n`).join('')
   window.benchEmit('message.updated', { info: { id: messageID, sessionID, role: 'assistant' } })
   window.benchEmit('message.part.updated', { part: { id: partID, messageID, sessionID, type: 'text', text: '' } })
   const frames = []
@@ -57,6 +57,7 @@ const run = async (kind, scale = 1) => {
     lastQuarterTickMs: +(delays.slice(-Math.floor(delays.length / 4)).reduce((a, b) => a + b, 0) / Math.floor(delays.length / 4)).toFixed(1),
     hasFormattedText: !!document.querySelector('.hui-md strong'),
     hasMath: !!document.querySelector('.katex'),
+    hasDisplayMath: !!document.querySelector('.hui-md .katex-display .mfrac'),
     hasHighlight: !!document.querySelector('.hljs'),
     scrollGap: Math.round((() => { const el = document.querySelector('.hui-chat-scroll'); return el.scrollHeight - el.scrollTop - el.clientHeight })())
   }
@@ -352,11 +353,27 @@ app.whenReady().then(async () => {
       await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
       await new Promise(resolve => setTimeout(resolve, 100))
       await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.hui-chat-pane button')).find(b => b.textContent.trim() === '✕')?.click()`)
-      const mathText = '当 x 很小时，例如 $\\sin x \\approx x$，$1-\\cos x \\approx \\frac{x^2}{2}$。\n下一行继续说明这个近似。'
+      const mathText = [
+        '例：求 $x[n] = (\\frac{1}{2})^n u[n]$ 的 Z 变换。',
+        '',
+        '解：',
+        '',
+        '$X(z) = \\sum_{n=0}^{\\infty}(\\frac{1}{2})^n z^{-n} = \\sum_{n=0}^{\\infty}(\\frac{1}{2z})^n$',
+        '',
+        '当 $|\\frac{1}{2z}| < 1$ 时，等比级数收敛：',
+        '',
+        '$X(z) = \\frac{1}{1 - \\frac{1}{2}z^{-1}}$',
+        '',
+        '分子分母同乘 z：',
+        '',
+        '$X(z) = \\frac{z}{z - \\frac{1}{2}}, \\quad |z| > \\frac{1}{2}$',
+        '',
+        '极点 $z = \\frac{1}{2}$，收敛域在极点圆外，对应右边（因果）序列。'
+      ].join('\n')
       await window.webContents.executeJavaScript(`window.benchEmit('message.updated', { info: { sessionID: 'benchmark-session', id: 'math-preview', role: 'assistant' } }); window.benchEmit('message.part.updated', { part: { sessionID: 'benchmark-session', messageID: 'math-preview', id: 'math-preview-part', type: 'text', text: ${JSON.stringify(mathText)}, time: { end: 1 } } })`)
       await new Promise(resolve => setTimeout(resolve, 400))
       await writeFile(previewPath('math-preview.png'), (await window.webContents.capturePage()).toPNG())
-      console.log(JSON.stringify({ mathLayout: await window.webContents.executeJavaScript(`(() => { const p = document.querySelector('.hui-md p:has(.mfrac)'); const f = p?.querySelector('.mfrac'); const r = f?.getBoundingClientRect(); const pr = p?.getBoundingClientRect(); return { paragraph: pr && { top: pr.top, bottom: pr.bottom, height: pr.height }, fraction: r && { top: r.top, bottom: r.bottom, height: r.height }, font: p && getComputedStyle(p).fontSize, lineHeight: p && getComputedStyle(p).lineHeight } })()`) }))
+      console.log(JSON.stringify({ mathLayout: await window.webContents.executeJavaScript(`(() => { const formulas = Array.from(document.querySelectorAll('.hui-md .katex:has(.mfrac)')); return formulas.map(formula => { const r = formula.getBoundingClientRect(); const p = formula.closest('p'); const pr = p?.getBoundingClientRect(); return { text: formula.textContent?.slice(0, 48), formulaHeight: r.height, paragraphHeight: pr?.height, lineHeight: p && getComputedStyle(p).lineHeight, display: !!formula.closest('.katex-display') } }) })()`) }))
       await window.webContents.executeJavaScript(`window.benchEmit('message.removed', { sessionID: 'benchmark-session', messageID: 'math-preview' })`)
       await new Promise(resolve => setTimeout(resolve, 100))
     }
@@ -378,6 +395,7 @@ app.whenReady().then(async () => {
       console.log(JSON.stringify(result))
       if (kind !== 'code') assert.equal(result.hasFormattedText, true)
       if (kind === 'list' || kind === 'blocks') assert.equal(result.hasMath, true)
+      if (kind === 'blocks') assert.equal(result.hasDisplayMath, true, 'standalone nested fractions use display layout')
       if (kind === 'code') assert.equal(result.hasHighlight, true)
       assert.ok(result.frameP95Ms < (process.env.BENCH_LARGE ? 100 : 75), 'streaming frame latency regressed')
       assert.ok(result.maxLongTaskMs < 150, 'streaming blocks the renderer for too long')

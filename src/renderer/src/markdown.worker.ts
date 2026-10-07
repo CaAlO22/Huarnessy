@@ -8,7 +8,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeStringify from 'rehype-stringify'
 import { defaultUrlTransform } from 'react-markdown'
 import type { Root, RootContent } from 'hast'
-import type { Nodes as MarkdownNode } from 'mdast'
+import type { Nodes as MarkdownNode, Root as MarkdownRoot } from 'mdast'
 import type { MarkdownRequest, MarkdownResult, RenderedBlock } from './markdown-types'
 
 // Reuse processors (and highlight language registration) for the worker's lifetime.
@@ -28,6 +28,45 @@ let cacheSize = 0
 const serialized = new WeakMap<RootContent, RenderedBlock>()
 let nextCacheID = 0
 const sentBlocks = new Map<string, Set<number>>()
+
+function improveFractions(node: MarkdownNode): void {
+  if (node.type === 'inlineMath' || node.type === 'math') {
+    // Promote plain fractions in inline and display math, including nested ones.
+    const mathNode = node as MarkdownNode & {
+      value: string
+      data?: { hChildren?: Array<{ type: string; value?: string; children?: Array<{ type: string; value: string }> }> }
+    }
+    mathNode.value = mathNode.value.replace(/\\frac(?![A-Za-z])/g, '\\dfrac')
+    const mathChildren = mathNode.data?.hChildren
+    if (mathChildren?.[0]?.children) mathChildren[0].children = [{ type: 'text', value: mathNode.value }]
+    else if (mathChildren) mathChildren.splice(0, mathChildren.length, { type: 'text', value: mathNode.value })
+  }
+  if ('children' in node) node.children.forEach(improveFractions)
+}
+
+function promoteStandaloneMath(node: MarkdownNode, source: string, done: boolean): MarkdownNode {
+  if (node.type === 'paragraph') {
+    const content = node.children.filter(child => child.type !== 'text' || child.value.trim())
+    const end = node.position?.end.offset
+    const closed = done || end != null && /^(?:\r?\n)[ \t]*(?:\r?\n)/.test(source.slice(end))
+    if (closed && content.length === 1 && content[0].type === 'inlineMath') {
+      const value = content[0].value
+      return {
+        type: 'math', value, meta: null, position: node.position,
+        data: {
+          hName: 'pre',
+          hChildren: [{
+            type: 'element', tagName: 'code',
+            properties: { className: ['language-math', 'math-display'] },
+            children: [{ type: 'text', value }]
+          }]
+        }
+      } as MarkdownNode
+    }
+  }
+  if ('children' in node) node.children = node.children.map(child => promoteStandaloneMath(child, source, done)) as typeof node.children
+  return node
+}
 
 function packBlocks(id: string, blocks: RenderedBlock[]): RenderedBlock[] {
   const previous = sentBlocks.get(id)
@@ -125,7 +164,9 @@ function serialize(node: RootContent): RenderedBlock {
 self.onmessage = (event: MessageEvent<MarkdownRequest>) => {
   const request = event.data
   try {
-    const tree = parser.parse(request.text)
+    const parsed = parser.parse(request.text)
+    improveFractions(parsed)
+    const tree = promoteStandaloneMath(parsed, request.text, request.done) as MarkdownRoot
     let tailBlock: MarkdownNode | undefined = tree
     while (tailBlock && 'children' in tailBlock && tailBlock.children.length
       && !['paragraph', 'heading', 'code', 'table'].includes(tailBlock.type)) tailBlock = tailBlock.children.at(-1)

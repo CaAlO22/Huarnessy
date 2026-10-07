@@ -94,9 +94,13 @@ npm run dev          # 开发（HMR）
 npm run typecheck    # tsc --noEmit
 npm run build        # 生产构建（out/）
 npm run preview      # 运行生产构建
+npm run app          # 从 out/ 的独立快照启动，不监听源码（用于“用它改本项目”）
+npm run app:build    # 先构建再按快照启动
 npm run test:stream  # 假内核驱动的 Electron 流式性能与功能回归
 npm run test:workspace # 工作空间设置与目录隔离的单元验证
 ```
+
+- `npm run dev` 会监听 `src/`：改渲染层触发 HMR 重载、改主进程直接重启 Electron。若正用该窗口与本项目对话，源码改动会打断当前窗口。需要一边改源码一边保持对话窗口存活时，用 `npm run app`（或 `npm run app:build`）：`scripts/run-standalone.mjs` 把 `out/` 拷贝到仓库外的稳定目录（Windows 为 `%LOCALAPPDATA%\OpencodeHUI\standalone`）再启动，之后 `npm run build` 覆盖仓库内 `out/` 不会影响运行中的实例。该快照仍是独立进程，带自己的 `opencode serve` 内核，与 VSCode 内的 opencode 实例互不影响。要看到新的源码改动，需重新执行 `npm run app:build` 并接受新窗口替换旧窗口。
 
 - **VSCode 调试**：F5 → `Debug All`（Main 用 node 调试、Renderer 用 chrome 9222 attach）。
   `Debug Main Process` 已注入 `REMOTE_DEBUGGING_PORT=9222`；`src/main/index.ts` 仅在该环境变量存在时开启远程调试端口（便于 CDP 自动化排查）。
@@ -184,7 +188,7 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 - 步骤悬停仅提亮整个面板的边框，不在标题按钮内另画一层矩形背景；否则宽度展开时会出现双层高亮。展开和收起的内容透明度与尺寸过渡同步，避免中途出现大片空玻璃。`--screenshot` 也保存展开、收起约 130ms 的中途帧。
 - `ReplyPresentation` 仍复用等待气泡完成入场动画；进入正文阶段后外层承托整轮回复的玻璃背景撤除，每条调用自己承载玻璃表面，避免所有步骤被一块大玻璃包住。
 - 顶部“设置”中的“面板透明度”滑杆统一控制主面板、侧栏、输入框、消息气泡、步骤和工具调用的底色强度，默认 55%，保存于渲染进程的 `localStorage`（`hui.panelTransparency`）。当前回复和折叠步骤使用同一套玻璃底色、边框与阴影，透明度变化只影响面板底色，不改变文字透明度。
-- 顶部“设置 → 对话正文字号”滑杆即时调整 `.hui-md` 正文（13–20px，步长 0.5px，默认 15.5px），保存于 `localStorage` 的 `hui.chatFontSize`。行内 KaTeX 随正文缩放；含分式的公式进一步放大，并提高 Markdown 行距，让分子、分母及相邻文字更易辨认。代码块保持自己的固定字体。`--screenshot` 的 `math-preview.png` 使用假内核复现行内 `\frac{x^2}{2}`，供排版目视检查。
+- 顶部“设置 → 对话正文字号”滑杆即时调整 `.hui-md` 正文（13–20px，步长 0.5px，默认 15.5px），保存于 `localStorage` 的 `hui.chatFontSize`。Worker 将行内和行间公式里的 `\frac` 转成 `\dfrac`，并同步 remark-math 的渲染节点，让嵌套分式也使用清楚的展示样式。独占段落的公式改为左对齐的行间布局；嵌在文字中的公式仍保持行内。行间公式增加上下留白，避免分式被裁切。代码块保持自己的固定字体。`--screenshot` 的 `math-preview.png` 使用假内核复现带嵌套分母的 Z 变换推导，供排版目视检查。
 - 用户消息气泡下方提供“复制”“撤回”。复制的是原始文本（保留 Markdown 源码）。撤回可选任意用户轮次，调用当前工作空间的 `session.revert({ messageID })`；opencode 会同时回退该轮及之后的回复与相关工作区文件改动。服务端通过会话的 `revert.messageID` 保留撤回边界，客户端据此隐藏该边界后的历史消息；输入框上方显示撤回轮数和“恢复撤回”，后者调用 `session.unrevert`。切换会话后读取 `session.get` 恢复边界；发出新一轮对话后不再提供恢复按钮，待内核清理已撤回消息。撤回进行中禁止重复点击，失败保持原对话，切换会话/工作空间时忽略迟到结果。`scripts/message-actions-regressions.cjs` 使用假内核覆盖这些操作。
 
 ---

@@ -254,13 +254,17 @@ body {
   margin: 0.6em 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 2px 0;
+  padding: 0.2em 0 0.25em;
+  text-align: left;
+}
+.hui-md .katex-display > .katex {
+  text-align: left;
 }
 .hui-md .katex {
   font-size: 1.2em;
 }
 .hui-md .katex:has(.mfrac) {
-  font-size: 1.35em;
+  font-size: 1.3em;
 }
 
 .hui-code {
