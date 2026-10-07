@@ -146,10 +146,10 @@ body {
 .hui-picker-trigger:disabled { opacity: .4; cursor: not-allowed; }
 .hui-picker-chevron { font-size: 17px; line-height: 1; transition: transform 180ms ease; }
 .hui-picker[data-open='true'] .hui-picker-chevron { transform: rotate(180deg); }
-.hui-picker-panel { position: absolute; z-index: 15; bottom: calc(100% + 10px); left: 0; width: min(300px, calc(100vw - 110px)); max-height: min(380px, 58vh); border-radius: 15px; padding: 6px; background: linear-gradient(145deg, rgba(39,52,71,.88), rgba(20,27,42,.85)); opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(8px) scale(.98); transform-origin: bottom left; transition: opacity 170ms ease, transform 190ms cubic-bezier(.2,.8,.2,1), visibility 190ms; }
-.hui-picker[data-open='true'] .hui-picker-panel { opacity: 1; visibility: visible; pointer-events: auto; transform: translateY(0) scale(1); }
+.hui-picker-panel { position: fixed; z-index: 60; width: min(300px, calc(100vw - 110px)); max-height: min(380px, 58vh); border-radius: 15px; padding: 6px; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(8px) scale(.98); transform-origin: bottom left; transition: opacity 170ms ease, transform 190ms cubic-bezier(.2,.8,.2,1), visibility 190ms; }
+.hui-picker-panel[data-open='true'] { opacity: 1; visibility: visible; pointer-events: auto; transform: translateY(0) scale(1); }
 .hui-picker-scroll { max-height: calc(min(380px, 58vh) - 12px); overflow-y: auto; overscroll-behavior: contain; }
-.hui-picker-group { padding: 10px 9px 4px; color: #9edce7; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+.hui-picker-group { padding: 11px 9px 5px; color: #9edce7; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
 .hui-picker-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 9px; border-radius: 9px; color: rgba(245,248,255,.79); font-size: 11.5px; text-align: left; }
 .hui-picker-option:hover, .hui-picker-option[data-focused='true'] { background: rgba(255,255,255,.1); color: #fff; }
 .hui-picker-option[aria-selected='true'] { background: rgba(107,199,218,.18); color: #cef8ff; }
@@ -224,6 +224,9 @@ body {
 .hui-question-submit:hover { background: #ecfcff; }
 .hui-question-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .hui-question-tool { display: flex; align-items: center; gap: 8px; }
+.hui-unlimited-permissions { color: #facc15; border-color: rgba(250,204,21,.3); background: rgba(250,204,21,.06); }
+.hui-unlimited-permissions p { color: rgba(253,224,71,.75); }
+.hui-unlimited-permissions .hui-liquid-toggle { accent-color: #facc15; }
 @keyframes hui-question-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes hui-question-rise { from { opacity: 0; transform: translateY(9px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (prefers-reduced-motion: reduce) { .hui-picker-panel, .hui-picker-chevron, .hui-composer-textarea { transition-duration: 1ms; } .hui-question-backdrop, .hui-question-dialog, .hui-slash-menu { animation-duration: 1ms; } }
@@ -427,7 +430,9 @@ body {
   min-width: 0;
   overflow: hidden;
   interpolate-size: allow-keywords;
-  transition: width 460ms cubic-bezier(.35, .65, .2, 1), border-radius 460ms cubic-bezier(.35, .65, .2, 1), border-color 180ms ease-out;
+  /* Expanding leads horizontally: width rushes out on a front-loaded ease-out
+     while the height trails on a slow-start curve that then sweeps open. */
+  transition: width 400ms cubic-bezier(.16, .84, .24, 1), border-radius 400ms cubic-bezier(.16, .84, .24, 1), border-color 180ms ease-out;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
   background: linear-gradient(135deg, rgba(255, 255, 255, calc(0.12 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(0.045 * var(--hui-panel-strength, .45))));
@@ -446,6 +451,8 @@ body {
   border-color: rgba(185, 220, 245, 0.28);
 }
 .hui-call-block.is-step[data-expanded='true'] { width: 100%; }
+/* Kernel compaction folds to the horizontal center instead of the left edge. */
+.hui-call-block.hui-compaction { margin-inline: auto; }
 .hui-call-header {
   display: flex;
   align-items: center;
@@ -482,9 +489,14 @@ body {
   grid-template-rows: 1fr;
   min-width: 0;
   contain: inline-size;
-  transition: grid-template-rows 500ms cubic-bezier(.35, .65, .2, 1);
+  transition: grid-template-rows 560ms cubic-bezier(.55, .05, .28, 1);
 }
-.hui-call-block.is-step[data-expanded='false'] .hui-call-reveal { grid-template-rows: 0fr; }
+/* Collapsing inverts the lead: the height drops away on a front-loaded curve
+   first, and the width holds briefly before shrinking to the summary. */
+.hui-call-block.is-step[data-expanded='false'] {
+  transition: width 520ms cubic-bezier(.55, .08, .3, 1), border-radius 520ms cubic-bezier(.55, .08, .3, 1), border-color 180ms ease-out;
+}
+.hui-call-block.is-step[data-expanded='false'] .hui-call-reveal { grid-template-rows: 0fr; transition: grid-template-rows 400ms cubic-bezier(.2, .85, .28, 1); }
 .hui-call-content {
   min-height: 0;
   overflow: hidden;
@@ -497,7 +509,7 @@ body {
 .hui-call-block.is-step[data-expanded='false'] .hui-call-content {
   opacity: 0;
   transform: translateY(-7px);
-  transition: opacity 300ms ease-in, transform 460ms cubic-bezier(.35, .65, .2, 1);
+  transition: opacity 240ms ease-out, transform 420ms cubic-bezier(.2, .85, .28, 1);
 }
 .hui-call-block.is-step .hui-message-parts > * {
   transform: translateY(0);
@@ -511,6 +523,39 @@ body {
   transition-duration: 320ms;
   transition-delay: 0ms;
 }
+/* A long expanded card can push its header off screen; put a small frosted
+   collapse control at the bottom so folding never requires a scroll back up. */
+.hui-call-foot {
+  display: flex;
+  justify-content: center;
+  padding: 0 12px 10px;
+}
+.hui-call-collapse {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: linear-gradient(135deg, rgba(255, 255, 255, calc(0.16 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(0.06 * var(--hui-panel-strength, .45))));
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 4px 12px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  transition: transform 220ms cubic-bezier(.22, 1, .36, 1), border-color 180ms ease-out, box-shadow 180ms ease-out;
+}
+.hui-call-collapse:hover {
+  transform: translateY(-1px);
+  border-color: rgba(185, 220, 245, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 6px 16px rgba(0, 0, 0, 0.26);
+}
+.hui-call-collapse:focus-visible { outline: 2px solid #9bdbe9; outline-offset: 2px; }
+/* The control folds the card upward, so its arrow points up even while the
+   surrounding block is in the expanded state. */
+.hui-call-block[data-expanded] .hui-call-collapse .hui-call-chevron { width: 6px; height: 6px; transform: rotate(-135deg); }
 
 .hui-step-range {
   display: flex;
@@ -780,6 +825,8 @@ body {
 }
 
 /* Keep the waiting transition on one node, then let each call own its surface. */
+.hui-reply-center { display: flex; justify-content: center; }
+.hui-compaction-body { padding: 12px 16px; }
 .hui-reply-bubble {
   box-sizing: border-box;
   position: relative;
@@ -799,7 +846,8 @@ body {
   overflow: hidden;
 }
 .hui-reply-bubble.is-waiting,
-.hui-reply-bubble.is-label-exit { width: 108px; }
+.hui-reply-bubble.is-label-exit { width: var(--hui-wait-width, 108px); }
+.hui-reply-bubble.is-wide-wait { --hui-wait-width: 128px; }
 .hui-reply-bubble.is-condensing { animation: hui-reply-condense 220ms cubic-bezier(.55, 0, .25, 1) both; }
 .hui-reply-bubble.is-dot-exit { width: 38px; }
 .hui-reply-bubble.is-unfolding {
@@ -845,7 +893,7 @@ body {
 .hui-reply-bubble.is-dot-exit .hui-reply-content { visibility: hidden; }
 .hui-reply-bubble.is-unfolding .hui-reply-content { visibility: hidden; }
 @keyframes hui-reply-condense {
-  from { width: 108px; }
+  from { width: var(--hui-wait-width, 108px); }
   to { width: 38px; }
 }
 @keyframes hui-wait-label-exit {
@@ -866,7 +914,11 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   .hui-call-block, .hui-call-reveal, .hui-call-content,
-  .hui-call-chevron, .hui-call-block.is-step .hui-message-parts > * {
+  .hui-call-block.is-step[data-expanded='false'],
+  .hui-call-block.is-step[data-expanded='false'] .hui-call-reveal,
+  .hui-call-block.is-step[data-expanded='false'] .hui-call-content,
+  .hui-call-chevron, .hui-call-block.is-step .hui-message-parts > *,
+  .hui-call-collapse {
     transition-duration: 1ms;
     transition-delay: 0ms;
   }

@@ -117,7 +117,9 @@ module.exports = async (preview = false) => {
   await wait(550)
   const openHeight = firstCall.getBoundingClientRect().height
   check(openHeight > openingHeight && getComputedStyle(firstCall.querySelector('.hui-tool-call')).opacity === '1', 'step and tool calls finish their expansion without remounting')
-  firstCall.querySelector('button').click()
+  const stepCollapse = firstCall.querySelector('.hui-call-collapse')
+  check(!!stepCollapse, 'an expanded step exposes a bottom collapse button')
+  stepCollapse.click()
   await wait(70)
   const closingHeight = firstCall.getBoundingClientRect().height
   check(closingHeight < openHeight && closingHeight > foldedHeight, `step panel contracts progressively when folded (${foldedHeight}, ${closingHeight}, ${openHeight})`)
@@ -158,7 +160,7 @@ module.exports = async (preview = false) => {
   check(getComputedStyle(call('call-three').querySelector('.hui-md')).fontSize === '18px', 'conversation text resizes live and saves the font size')
   fontSlider.parentElement.querySelector('button').click()
   await waitFor(() => localStorage.getItem('hui.chatFontSize') === '15.5')
-  const liquidToggle = document.querySelector('.hui-liquid-toggle')
+  const liquidToggle = document.querySelector('[aria-label="对话气泡折射"]')
   const panelFilter = () => {
     const style = getComputedStyle(paneBackdrop)
     return [style.webkitBackdropFilter, style.backdropFilter, style.getPropertyValue('-webkit-backdrop-filter')].filter(Boolean).join(' | ')

@@ -24,6 +24,7 @@ window.benchSessions = [
 window.benchRequests = []
 window.benchMessages = {}
 window.benchQuestions = []
+window.benchPermissions = []
 window.benchClipboard = ''
 Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
   writeText: async text => { window.benchClipboard = text }
@@ -39,7 +40,7 @@ window.fetch = async (url, options) => {
   window.benchRequests.push({ method, path, directory, body })
   if (path === '/session' && method === 'POST') {
     if (window.benchHoldCreate === directory) await new Promise(resolve => { window.benchReleaseCreate = resolve })
-    const session = { id: `created-${++created}`, title: body.title ?? 'New Session', directory }
+    const session = { id: `created-${++created}`, title: body.title ?? `New session - ${new Date().toISOString()}`, directory }
     window.benchSessions.push(session)
     return new Response(JSON.stringify(session), { headers: { 'Content-Type': 'application/json' } })
   }
@@ -48,8 +49,18 @@ window.fetch = async (url, options) => {
     const id = path.split('/')[2]
     return new Response(JSON.stringify({ info: { id: 'command-message', sessionID: id, role: 'assistant' }, parts: [] }), { headers: { 'Content-Type': 'application/json' } })
   }
-  if (path.endsWith('/summarize') && method === 'POST') return new Response('true', { headers: { 'Content-Type': 'application/json' } })
+  if (path.endsWith('/summarize') && method === 'POST') {
+    if (window.benchHoldSummarize) await new Promise(resolve => { window.benchReleaseSummarize = resolve })
+    return new Response('true', { headers: { 'Content-Type': 'application/json' } })
+  }
   if (path === '/question' && method === 'GET') return new Response(JSON.stringify(window.benchQuestions), { headers: { 'Content-Type': 'application/json' } })
+  if (path === '/permission' && method === 'GET') return new Response(JSON.stringify(window.benchPermissions), { headers: { 'Content-Type': 'application/json' } })
+  if (/^\/permission\/[^/]+\/reply$/.test(path)) {
+    if (window.benchPermissionFailure) return new Response(JSON.stringify({ message: '测试授权失败' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+    if (window.benchHoldPermission) await new Promise(resolve => { window.benchReleasePermission = resolve })
+    window.benchPermissions = window.benchPermissions.filter(request => request.id !== path.split('/')[2])
+    return new Response('true', { headers: { 'Content-Type': 'application/json' } })
+  }
   if (/^\/question\/[^/]+\/(reply|reject)$/.test(path)) {
     const id = decodeURIComponent(path.split('/')[2])
     window.benchQuestions = window.benchQuestions.filter(question => question.id !== id)

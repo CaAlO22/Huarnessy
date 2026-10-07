@@ -54,8 +54,8 @@ module.exports = async () => {
   check(!row('Streaming benchmark') && row('Foreign workspace') && document.querySelector('.hui-md')?.textContent === '工作空间 B 的历史记录', 'late requests and foreign workspace events cannot overwrite the current workspace')
 
   button('+ 新建会话').click()
-  await waitFor(() => !!row('New Session') && row('New Session').classList.contains('glass-soft'))
-  const created = window.benchSessions.find(session => session.title === 'New Session' && session.directory === b)
+  await waitFor(() => !!row('新会话') && row('新会话').classList.contains('glass-soft'))
+  const created = window.benchSessions.find(session => /^New session - /.test(session.title) && session.directory === b)
   check(!!created, 'new sessions are created in the selected directory')
   const textarea = document.querySelector('textarea')
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(textarea, '只在工作空间 B 发送')
@@ -70,10 +70,10 @@ module.exports = async () => {
   check(window.benchRequests.find(request => request.path === `/session/${created.id}/abort`).directory === b, 'abort requests carry the selected directory')
   window.benchEmit('session.idle', { sessionID: created.id })
   await waitFor(() => !!button('发送'))
-  row('New Session').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 100, clientY: 100 }))
+  row('新会话').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 100, clientY: 100 }))
   await waitFor(() => !!document.querySelector('[role="menu"]'))
   document.querySelector('[role="menuitem"]').click()
-  await waitFor(() => !row('New Session'))
+  await waitFor(() => !row('新会话'))
   check(window.benchRequests.find(request => request.method === 'DELETE' && request.path === `/session/${created.id}`).directory === b, 'deletion requests carry the selected directory')
 
   await choose(a)
@@ -97,7 +97,7 @@ module.exports = async () => {
   window.benchHoldCreate = null
   window.benchReleaseCreate()
   await wait(100)
-  check(!row('New Session') && !document.querySelector('.hui-md'), 'a pending session creation cannot select a session in another workspace')
+  check(!row('新会话') && !document.querySelector('.hui-md'), 'a pending session creation cannot select a session in another workspace')
   check(window.benchRequests.filter(request => request.path.startsWith('/session')).every(request => request.directory === a || request.directory === b), 'all session requests explicitly identify their workspace')
 
   await choose(a)

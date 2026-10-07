@@ -18,7 +18,7 @@ module.exports = async () => {
   const model = document.querySelector('[aria-label="模型"]')
   model.click()
   await waitFor(() => model.getAttribute('aria-expanded') === 'true')
-  const modelPanel = model.parentElement.querySelector('.hui-picker-panel')
+  const modelPanel = document.querySelector('.hui-picker-panel[aria-label="模型"]')
   await waitFor(() => getComputedStyle(modelPanel).visibility === 'visible')
   check(!!modelPanel.querySelector('.hui-picker-option'), 'model picker opens a glass menu')
   Array.from(document.querySelectorAll('.hui-picker-option')).find(option => option.textContent.includes('Beta')).click()
@@ -59,25 +59,53 @@ module.exports = async () => {
   const slashOptions = () => Array.from(document.querySelectorAll('.hui-slash-option'))
   check(slashOptions().length >= 4, 'typing a slash opens the frosted command menu with built-in commands')
   check(slashOptions().some(option => option.textContent.includes('/compact')), 'the built-in compact command is listed')
+
+  // Selecting a built-in command runs it immediately instead of completing text.
   setText('/co')
   await waitFor(() => {
     const options = slashOptions()
     return options.length === 1 && options[0].textContent.includes('/compact')
   })
+  window.benchHoldSummarize = true
   textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-  await waitFor(() => textarea.value === '/compact ')
-  check(textarea.value === '/compact ' && !document.querySelector('.hui-slash-menu'), 'selecting a command completes it into the composer and closes the menu')
-
-  // Built-in /compact runs through the summarize endpoint.
-  Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '发送').click()
   await waitFor(() => window.benchRequests.some(request => request.path === '/session/benchmark-session/summarize'))
-  check(textarea.value === '' && !document.querySelector('.hui-slash-menu'), 'running a built-in command clears the composer')
-  window.benchEmit('session.idle', { sessionID: 'benchmark-session' })
-  await new Promise(resolve => setTimeout(resolve, 40))
+  check(textarea.value === '' && !document.querySelector('.hui-slash-menu'), 'selecting a built-in command runs it immediately and clears the composer')
+  await waitFor(() => document.body.textContent.includes('等待会话压缩'))
+  check(!!document.querySelector('.hui-reply-center'), 'compaction starts with a centered waiting bubble')
 
-  // User-defined commands still go through the session command endpoint.
-  setText('/review')
-  await waitFor(() => !!document.querySelector('.hui-slash-menu'))
+  // The kernel streams the summary into the same centered bubble.
+  const compactCreated = Date.now()
+  window.benchEmit('message.updated', { info: { sessionID: 'benchmark-session', id: 'compact-message', role: 'assistant', summary: true, time: { created: compactCreated } } })
+  window.benchEmit('message.part.updated', { part: { id: 'compact-part', messageID: 'compact-message', sessionID: 'benchmark-session', type: 'text', text: '压缩后的上下文摘要' } })
+  await waitFor(() => !!document.querySelector('.hui-reply-center')?.textContent.includes('压缩后的上下文摘要'))
+  check(!document.querySelector('.hui-reply-bubble.is-waiting'), 'the compaction bubble reuses its surface for the streamed summary')
+
+  // Completing folds the bubble into a centered, reopenable step card.
+  window.benchEmit('message.updated', { info: { sessionID: 'benchmark-session', id: 'compact-message', role: 'assistant', summary: true, time: { created: compactCreated, completed: Date.now() } } })
+  window.benchReleaseSummarize?.()
+  window.benchHoldSummarize = false
+  await waitFor(() => !!document.querySelector('.hui-call-block.hui-compaction'))
+  await new Promise(resolve => setTimeout(resolve, 550))
+  const compactCard = document.querySelector('.hui-call-block.hui-compaction')
+  check(compactCard.querySelector('.hui-call-heading')?.textContent === '会话已压缩' && compactCard.getAttribute('data-expanded') === 'false', 'a finished compaction folds into a centered summary card')
+  compactCard.querySelector('.hui-call-header').click()
+  await waitFor(() => compactCard.getAttribute('data-expanded') === 'true')
+  check(compactCard.querySelector('.hui-call-content')?.textContent.includes('压缩后的上下文摘要'), 'the compaction card can be reopened')
+  const compactCollapse = compactCard.querySelector('.hui-call-collapse')
+  check(!!compactCollapse && compactCollapse.getBoundingClientRect().height > 0, 'an expanded compaction card exposes a bottom collapse button')
+  compactCollapse.click()
+  await waitFor(() => compactCard.getAttribute('data-expanded') === 'false')
+  await new Promise(resolve => setTimeout(resolve, 550))
+
+  // User-defined commands still complete into the composer so arguments can be typed.
+  setText('/rev')
+  await waitFor(() => {
+    const options = slashOptions()
+    return options.length === 1 && options[0].textContent.includes('/review')
+  })
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await waitFor(() => textarea.value === '/review ')
+  check(textarea.value === '/review ' && !document.querySelector('.hui-slash-menu'), 'selecting a user command completes it into the composer')
   Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '发送').click()
   await waitFor(() => window.benchRequests.some(request => request.path === '/session/benchmark-session/command' && request.body?.command === 'review'))
   const commandRequest = window.benchRequests.find(request => request.path === '/session/benchmark-session/command')

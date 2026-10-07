@@ -9,11 +9,14 @@ export function hasVisiblePart(part: any): boolean {
 
 type Phase = 'waiting' | 'label-exit' | 'condensing' | 'dot-exit' | 'unfolding' | 'catching-up' | 'ready'
 
-export function ReplyPresentation({ waiting, textLength = 0, children, liquidGlass = false }: {
+export function ReplyPresentation({ waiting, textLength = 0, children, liquidGlass = false, waitLabel = '等待回复', center = false, wideWait = false }: {
   waiting: boolean
   textLength?: number
   children?: ReactNode | ((visibleChars: number | undefined) => ReactNode)
   liquidGlass?: boolean
+  waitLabel?: string
+  center?: boolean
+  wideWait?: boolean
 }): React.ReactElement {
   const wasWaiting = useRef(waiting)
   const [phase, setPhase] = useState<Phase>(waiting ? 'waiting' : 'ready')
@@ -60,11 +63,11 @@ export function ReplyPresentation({ waiting, textLength = 0, children, liquidGla
   const showSurface = phase !== 'catching-up' && phase !== 'ready'
   const lens = useLiquidGlassSurface<HTMLDivElement>(liquidGlass && showSurface)
   return (
-    <div className="hui-reply-stage">
+    <div className={`hui-reply-stage${center ? ' hui-reply-center' : ''}`}>
       <div
         ref={lens.ref}
         style={lens.style}
-        className={`${showSurface ? 'glass ' : ''}${liquidGlass && showSurface ? 'glass-liquid ' : ''}hui-message hui-reply-bubble is-${phase}`}
+        className={`${showSurface ? 'glass ' : ''}${liquidGlass && showSurface ? 'glass-liquid ' : ''}hui-message hui-reply-bubble${wideWait ? ' is-wide-wait' : ''} is-${phase}`}
         onAnimationEnd={(event) => {
           if (event.target !== event.currentTarget) return
           if (phase === 'condensing' && event.animationName === 'hui-reply-condense') setPhase('dot-exit')
@@ -91,7 +94,7 @@ export function ReplyPresentation({ waiting, textLength = 0, children, liquidGla
                   setPhase('condensing')
                 }
               }}
-            >等待回复</span>
+            >{waitLabel}</span>
           </div>
         ) : null}
         <div className="hui-reply-content flex min-w-0 flex-col gap-3" aria-hidden={showWait || phase === 'unfolding' || undefined}>

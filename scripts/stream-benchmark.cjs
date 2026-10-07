@@ -6,6 +6,8 @@ const replyUIRegressions = require('./reply-ui-regressions.cjs')
 const stepRangeRegressions = require('./step-range-regressions.cjs')
 const messageActionsRegressions = require('./message-actions-regressions.cjs')
 const composerRegressions = require('./composer-regressions.cjs')
+const permissionRegressions = require('./permission-regressions.cjs')
+const collapseScrollRegressions = require('./collapse-scroll-regressions.cjs')
 const { writeFile } = require('node:fs/promises')
 const screenshotRunId = `${Date.now()}-${process.pid}`
 const previewPath = name => join(__dirname, '../out', `${screenshotRunId}-${name}`)
@@ -294,6 +296,10 @@ app.whenReady().then(async () => {
     }
     await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
     await new Promise(resolve => setTimeout(resolve, 100))
+    if (process.env.BENCH_PERMISSION_ONLY) {
+      console.log(JSON.stringify({ permissions: await window.webContents.executeJavaScript(`(${permissionRegressions.toString()})()`) }))
+      return
+    }
     if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ replyUI: await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})()`) }))
     if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ stepRanges: await window.webContents.executeJavaScript(`(${stepRangeRegressions.toString()})(${Boolean(process.env.BENCH_SCREENSHOT)})`) }))
     if (process.env.BENCH_SCREENSHOT) {
@@ -450,6 +456,8 @@ app.whenReady().then(async () => {
     if (!process.env.BENCH_LAYOUT_ONLY) {
       console.log(JSON.stringify({ regressions: await window.webContents.executeJavaScript(`(${regressions.toString()})()`) }))
       console.log(JSON.stringify({ composer: await window.webContents.executeJavaScript(`(${composerRegressions.toString()})()`) }))
+      console.log(JSON.stringify({ permissions: await window.webContents.executeJavaScript(`(${permissionRegressions.toString()})()`) }))
+      console.log(JSON.stringify({ collapseScroll: await window.webContents.executeJavaScript(`(${collapseScrollRegressions.toString()})()`) }))
       console.log(JSON.stringify({ workspaces: await window.webContents.executeJavaScript(`(${workspaceRegressions.toString()})()`) }))
       if (process.env.BENCH_SCREENSHOT) await writeFile(process.env.BENCH_SCREENSHOT, (await window.webContents.capturePage()).toPNG())
       console.log(JSON.stringify({ sessionDeletion: await window.webContents.executeJavaScript(`(${sessionDeletionRegressions.toString()})()`) }))

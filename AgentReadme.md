@@ -189,17 +189,20 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 - Bash 工具卡片在 `state.status === 'running'` 时优先用 `state.input.command` 显示正在执行的命令；完成后的标题仍优先用内核提供的 `state.title`。运行中的 Bash 卡片外缘用 CSS 锥形渐变快速流动，状态结束即停止；系统要求减少动态效果时保留静态光边。
 - Read 文件工具卡片在摘要中显示起始行；完成后优先根据 `state.metadata.display.lineStart/lineEnd` 显示实际读取行数，旧会话缺少该元数据时从带行号的输出统计，不能把输入的 `limit` 当成实际读取行数。目录、图片等没有文本行数的完成结果不显示行数。Edit 完成后优先使用 `state.metadata.filediff.additions/deletions` 显示新增和移除行数，旧结果只有 `diff` 时统计补丁的增删行；计数不可用时不显示虚构数字。
 - 读取图片的 `read` 调用显示为 `PicRead`：`isImageRead()` 在 `state.attachments` 含 `image/*`、`metadata.mime/display.mime` 是图片、或 `input.filePath` 以图片扩展名结尾时判定，工具气泡标签与步骤摘要的计数都用 `PicRead`（步骤里 `PicRead` 与普通 `Read` 分开计数，但沿用 `read` 的配色）。标签文字用 `.hui-pic-read` 做左→右渐变：前半段是比 `--tool-accent`（Read 为 `#a9dbff`）略深的蓝 `#7cb6e6`，后半段完全回到 `#a9dbff`，中间过渡；用 `background-clip: text` + 透明填充实现。`scripts/reply-ui-regressions.cjs` 用假内核验证气泡标签与折叠步骤计数。
-- 步骤展开和收起使用非线性的宽度与网格行高过渡；正文、思考及 ToolCall 随后渐显和轻微位移。折叠时内容保持在 DOM 中并设为不可聚焦，系统启用减少动态效果时将过渡缩至 1ms。不要恢复 `hidden` 切换，否则面板会瞬间跳变。
+- 步骤展开和收起使用非线性的宽度与网格行高过渡，且两个方向错峰主导以贴合内容排版：展开时宽度先快速铺开（400ms `cubic-bezier(.16,.84,.24,1)`），网格行高随后大幅展开（560ms `cubic-bezier(.55,.05,.28,1)`）；收起时反过来，行高先大幅收缩（400ms `cubic-bezier(.2,.85,.28,1)`），宽度再收回（520ms `cubic-bezier(.55,.08,.3,1)`）。两者始终同时运行，只是曲线一个前重一个后重，形成 Apple 式的错峰非线性节奏，而非先后串行的两段动画。正文、思考及 ToolCall 随后渐显和轻微位移。折叠时内容保持在 DOM 中并设为不可聚焦，系统启用减少动态效果时将过渡缩至 1ms（选择器需覆盖 `[data-expanded='false']` 分支，否则更高优先级会漏掉）。不要恢复 `hidden` 切换，否则面板会瞬间跳变。
 - `LiquidGlass` 的置换图按元素尺寸生成，尺寸变化后重新采样。展开/收起期间元素逐帧改变大小，若仍沿用旧的“等尺寸稳定后再更新”策略，折叠时的小图会被拉伸到变宽的盒子上，把低分辨率的边缘放大成锯齿。因此 `useLiquidGlassMap` 在 `ResizeObserver` 回调里用 `element.getAnimations()` 判断当前是否有过渡/动画：有则每帧刷新置换图，没有（如流式正文持续长高）则沿用尾随防抖，避免逐帧重算拖慢流式。映射图生成也做了优化（复用画布、安全内部区域早退、去掉 `Math.hypot`/多余 `Math.pow`）。`test:stream` 在步骤展开中途断言图宽高至少为元素的 60%，防止回退成拉伸折叠图。
 - 折叠内容虽压至零高，仍可能参与 `fit-content` 的固有宽度计算；`.hui-call-reveal` 通过 `contain: inline-size` 隔离这部分宽度，让收起气泡及悬停区域只包住步骤标题和摘要。`test:stream` 验证最终宽度；`--screenshot` 生成正常与悬停的步骤截图供视觉核对。
+- 展开后过长的步骤卡或压缩摘要卡，其标题栏会被推到屏幕外，需滚回顶部才能收起。因此在卡片底部（`.hui-call-reveal` 之后）放一个小小的圆形毛玻璃收起按钮 `.hui-call-foot > .hui-call-collapse`，仅在展开时渲染。折叠方向朝上，故按钮内复用 `.hui-call-chevron` 但用更高优先级规则覆盖成朝上（`rotate(-135deg)`），不受卡片 `[data-expanded='true']` 的朝下旋转影响。步骤卡与压缩卡都带此按钮。`test:stream` 断言展开时按钮可见、点击可折叠。
+- 步骤卡/压缩卡高于一屏时，卡片顶部会滚出视口上方；此时收起会在极短时间内抽走视口上方的一大段高度，而 `.hui-chat-scroll` 设了 `overflow-anchor: none`（浏览器不自动补偿滚动），下方内容便猛地向上跳，像被「唰」地抽走。为此 `CallBlock` / `CompactionBlock` 的收起按钮通过 `CollapseScrollContext` 通知 `App`：`adjustScrollForCollapse` 在该卡片**顶部高于视口顶**且未吸底时启动 rAF 循环，逐帧读取卡片正在动画的高度，把滚动位置按已收缩量向上平移（`scrollTop = startTop - 已收缩量`），使下方内容在视口里保持不动，整轮收起读作一次平滑上滚。吸底（`stickBottom`）时交给既有的 `ResizeObserver` 跟随，卡顶仍在视口内时跳过（本就是原地折叠）。回归见 `scripts/collapse-scroll-regressions.cjs`（断言收起时滚动位置上移、且折叠前后下方标记位置几乎不变）。
 - 步骤悬停仅提亮整个面板的边框，不在标题按钮内另画一层矩形背景；否则宽度展开时会出现双层高亮。展开和收起的内容透明度与尺寸过渡同步，避免中途出现大片空玻璃。`--screenshot` 也保存展开、收起约 130ms 的中途帧。
 - `ReplyPresentation` 仍复用等待气泡完成入场动画；进入正文阶段后外层承托整轮回复的玻璃背景撤除，每条调用自己承载玻璃表面，避免所有步骤被一块大玻璃包住。
 - 顶部“设置”中的“面板透明度”滑杆统一控制主面板、侧栏、输入框、消息气泡、步骤和工具调用的底色强度，默认 55%，保存于渲染进程的 `localStorage`（`hui.panelTransparency`）。当前回复和折叠步骤使用同一套玻璃底色、边框与阴影，透明度变化只影响面板底色，不改变文字透明度。
 - 顶部“设置 → 背景”可切换深灰纯色、黑灰流动与深色底的彩色流动，保存在 `localStorage` 的 `hui.backgroundMode`，默认彩色流动。彩色模式使用 GradFlow 的 WebGL `wave` 连续渐变；黑灰模式改由 `MottledBackground.tsx` 的多尺度值噪声与坐标扰动生成暗色斑驳纹理，不再使用会形成周期性横波的 `wave`。黑灰画布按窗口 65% 分辨率、约 25 FPS 绘制，暗部为近黑，亮部限于炭灰；纯色底色是 `#090a0d` 且不挂载画布。两个画布都在页面隐藏、不可见或系统减少动态效果时停止逐帧绘制。背景偏好与面板透明度独立，切换工作空间时保留。
 - 顶部“设置 → 对话正文字号”滑杆即时调整 `.hui-md` 正文（13–20px，步长 0.5px，默认 15.5px），保存于 `localStorage` 的 `hui.chatFontSize`。Worker 将行内和行间公式里的 `\frac` 转成 `\dfrac`，并同步 remark-math 的渲染节点，让嵌套分式也使用清楚的展示样式。独占段落的公式改为左对齐的行间布局；嵌在文字中的公式仍保持行内。行间公式增加上下留白，避免分式被裁切。代码块保持自己的固定字体。`--screenshot` 的 `math-preview.png` 使用假内核复现带嵌套分母的 Z 变换推导，供排版目视检查。
 - 用户消息气泡下方提供“复制”“撤回”。复制的是原始文本（保留 Markdown 源码）。撤回可选任意用户轮次，调用当前工作空间的 `session.revert({ messageID })`；opencode 会同时回退该轮及之后的回复与相关工作区文件改动。服务端通过会话的 `revert.messageID` 保留撤回边界，客户端据此隐藏该边界后的历史消息；输入框上方显示撤回轮数和“恢复撤回”，后者调用 `session.unrevert`。切换会话后读取 `session.get` 恢复边界；发出新一轮对话后不再提供恢复按钮，待内核清理已撤回消息。撤回进行中禁止重复点击，失败保持原对话，切换会话/工作空间时忽略迟到结果。`scripts/message-actions-regressions.cjs` 使用假内核覆盖这些操作。
-- 底部 Agent/模型选择改用向上展开的玻璃菜单，带开关动画；输入框随内容增长，最高 192px，之后在输入框内部滚动。粘贴、拖拽和“＋”文件选择可添加图片或文件，发送时按 SDK 的 `FilePartInput` 用 data URL 与文本一起提交，单文件上限 25 MB。切换工作空间时清空待发送附件和未完成的文件读取。
-- 输入框以 `/` 开头且尚未输入空格时，会在输入框上方弹出斜杠命令菜单（`.hui-slash-menu`）。它用中性的半透明深色底（`rgba(16,17,22,.66)`，约 2/3 不透明）+ `backdrop-filter: blur(20px) saturate(150%)` + 细边框与内侧高光：既要能透出背景表现为毛玻璃，又要保证命令与描述清晰可读；**不要**纯透明（可读性差），也**不要**不透明的蓝色渐变（既不透明也偏色）。**该菜单必须是输入框气泡的兄弟节点，不能放在气泡内部**：`.hui-composer` 带 `backdrop-filter`，会成为 Backdrop Root，后代菜单的 `backdrop-filter` 只能采样气泡自身那一层，框外没有内容可模糊，菜单看起来就是不透明黑块。现在菜单放在包裹输入框的 `.relative` 容器里、与 `.hui-composer` 同级，`backdrop-filter` 才能采样到聊天区与壁纸。标题与描述使用应用正文字体（Noto Sans SC），命令名不要用等宽字体，描述限制两行。命令列表为「客户端内置 + 当前工作空间 `command.list()`」合并去重：内置 `compact`（`session.summarize` 压缩上下文）、`new`（新建会话）、`undo` / `redo`（复用撤回与恢复流程），再并入内核返回的用户命令与技能。随命令名即时过滤；上下键移动、Tab 或回车补全为 `/name `，Escape 关闭但保留文本，鼠标点击同样补全。补全后继续输入参数，回车发送时首词匹配内置命令则执行对应动作，匹配用户命令则调用 `session.command({ command, arguments })`，否则按普通提示发送；命令不支持附件。回归见 `scripts/composer-regressions.cjs`。
+- 底部 Agent/模型选择改用向上展开的玻璃菜单，带开关动画；输入框随内容增长，最高 192px，之后在输入框内部滚动。粘贴、拖拽和“＋”文件选择可添加图片或文件，发送时按 SDK 的 `FilePartInput` 用 data URL 与文本一起提交，单文件上限 25 MB。切换工作空间时清空待发送附件和未完成的文件读取。菜单面板（`.hui-picker-panel`）通过 portal 挂到 `document.body` 并按触发器矩形 `position: fixed` 定位：`.hui-composer` 的 `backdrop-filter` 是 Backdrop Root，面板留在气泡内部时模糊只能采样气泡自身，看起来没有毛玻璃；挂到 body 后才能采样聊天区与壁纸。面板常驻 DOM，用 `data-open` 控制开合动画，点击外部判定需同时检查触发器与 portal 面板两个子树。提供商分组标题（`.hui-picker-group`，13px）大于模型选项（11.5px）以形成层次。
+- 输入框以 `/` 开头且尚未输入空格时，会在输入框上方弹出斜杠命令菜单（`.hui-slash-menu`）。它用中性的半透明深色底（`rgba(16,17,22,.66)`，约 2/3 不透明）+ `backdrop-filter: blur(20px) saturate(150%)` + 细边框与内侧高光：既要能透出背景表现为毛玻璃，又要保证命令与描述清晰可读；**不要**纯透明（可读性差），也**不要**不透明的蓝色渐变（既不透明也偏色）。**该菜单必须是输入框气泡的兄弟节点，不能放在气泡内部**：`.hui-composer` 带 `backdrop-filter`，会成为 Backdrop Root，后代菜单的 `backdrop-filter` 只能采样气泡自身那一层，框外没有内容可模糊，菜单看起来就是不透明黑块。现在菜单放在包裹输入框的 `.relative` 容器里、与 `.hui-composer` 同级，`backdrop-filter` 才能采样到聊天区与壁纸。标题与描述使用应用正文字体（Noto Sans SC），命令名不要用等宽字体，描述限制两行。命令列表为「客户端内置 + 当前工作空间 `command.list()`」合并去重：内置 `compact`（`session.summarize` 压缩上下文）、`new`（新建会话）、`undo` / `redo`（复用撤回与恢复流程），再并入内核返回的用户命令与技能。随命令名即时过滤；上下键移动，Escape 关闭但保留文本。**选中用户命令或技能**（Tab、回车或点击）补全为 `/name `，继续输入参数后回车调用 `session.command({ command, arguments })`，否则按普通提示发送；**选中内置命令**（compact/new/undo/redo，均无参数）则立即执行 `runBuiltin`，不再先补全再回车。命令不支持附件。回归见 `scripts/composer-regressions.cjs`。
+- 压缩（compact）由内核直接处理，不产生用户回声，因此单独渲染：`session.summarize` 开始时先显示居中的「等待会话压缩」气泡（复用 `ReplyPresentation` 的等待动画，通过 `waitLabel`/`center`/`wideWait` 参数定制），内核把摘要消息（`info.summary === true` 的助手消息）流式写入时复用同一气泡显示内容；消息 `time.completed` 出现后折叠成居中的步骤式卡片「会话已压缩」，点击可展开查看。压缩消息在会话渲染循环里被识别为独立块（不并入普通回复轮次），压缩进行期间抑制普通的「等待回复」气泡。不要用 `info.agent` 判定，压缩助手消息用的是 `summary: true`。回归见 `scripts/composer-regressions.cjs`（假内核用 `window.benchHoldSummarize` 挂起 summarize，以稳定断言等待→流式→折叠的完整生命周期）。
 - 顶部标题栏设置按钮右侧显示上下文占用圆环（`.hui-context-meter` + SVG `stroke-dasharray/dashoffset`），环心是占用百分比，悬停 `title` 显示已用 / 上限 tokens。上限优先取当前会话**最后一条有真实用量的助手消息**记录的 `providerID/modelID` 对应模型的 `limit.context`，没有时回退到下拉框所选模型 —— 不同会话可能用不同模型，不能用所选模型硬套。已用取该消息 `tokens` 的 `input + output + cache.read + cache.write`；占用 ≥70% 变黄、≥90% 变红。查找时会**跳过用量为 0 的消息**（刚创建、尚未收到用量事件的助手条目或新步骤），否则圆环会在真实数字和 0 之间反复横跳；数字用统一正文字体而非等宽字体。切换工作空间时随模型列表一起清空。
 - 界面正文统一使用随应用打包的 Noto Sans SC Variable；代码块、行内代码、工作空间路径和 KaTeX 保持各自的等宽/数学字体。字体 CSS 在 `main.tsx` 引入，构建后的字体文件无需联网加载；发布产物同时包含 `licenses/noto-sans-sc-OFL.txt`。
 - `question.asked` SSE 事件及 `question.list` 用于显示当前会话的待答问题；弹出的玻璃询问框支持单选、多选和自定义回答，以当前目录调用 `question.reply` / `question.reject`。切换会话时重新读取待答列表，并忽略旧请求的迟到响应。Question 工具气泡仅显示状态，不再展开原始 JSON。`scripts/composer-regressions.cjs` 用假内核验证这些交互。
@@ -245,6 +248,12 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 - 切换工作空间不重启内核，也不主动中断原工作空间中已经发送的模型任务；切回后可以重新选择对应会话查看历史。
 - `npm run test:workspace` 验证设置保存、恢复、失效回退和目录比较；`npm run test:stream` 增加 16 项工作空间界面与请求回归，使用假内核验证目录隔离、取消/失败选择、Unicode 路径、各类请求的目录参数，以及迟到的列表、历史和新建结果。
 
+### 会话标题
+
+- 客户端 `session.create` 一律不传 `title`，由内核生成默认标题 `New session - <ISO 时间戳>`。内核只在标题匹配该默认格式时（`Session.isDefaultTitle`）才在小模型可用时异步总结标题并推送 `session.updated`；客户端曾传入 `New Session` 或前 48 字问题作为标题，导致内核永远跳过总结，标题停留在初始值。
+- 侧边栏对匹配默认标题的会话显示"新会话"占位（`sessionLabel`），总结完成后随 `session.updated` 刷新为真实标题。
+- 假内核（`stream-benchmark-preload.cjs`）模拟同样的默认标题；`workspace-regressions.cjs` 按 `新会话` 占位与 `New session - ` 前缀断言。
+
 ### 会话删除
 
 - 在左侧会话条目上右键，点击“删除会话”，通过 SDK 的 `session.delete({ path: { id } })` 调用 `DELETE /session/{id}`。右键不改变当前选中的会话。
@@ -258,6 +267,10 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 ---
 
 ## 9. 待办 / 已知限制
+
+- 设置中的黄色“默认无限权限”默认关闭，偏好保存为 `hui.unlimitedPermissions`。开启后自动放行当前工作空间内所有会话（包括后台会话）的待授权和新增工具权限请求；使用 `reply: once`，不写入内核永久规则，因此关闭后新请求恢复人工审批。自动回复防重；失败显示原审批弹窗，可手动重试，避免无限重试。工作空间切换仍隔离旧客户端结果。`test:stream -- --permission-only` 覆盖开关默认值、黄色样式、持久化、各类权限自动放行、后台请求、防重和关闭后的迟到回复。
+
+- 工具访问工作空间之外的路径（例如 `%TEMP%`）会等待 `external_directory` 授权，内核仍标为 `running`。`PermissionGate.tsx` 通过 v2 SDK 的 `permission.list/reply` 及主 SSE 的 `permission.asked/replied` 显示授权弹窗；打开会话和 SSE 重连时补查。允许一次、始终允许与拒绝均带当前工作空间目录；切换会话/工作空间忽略迟到响应。使用 `npm run test:stream -- --permission-only`（可加 `--production`）以假内核验证 Read 待授权恢复、回复和会话隔离。发布前确认 `out/renderer/assets` 与独立快照包含 `工具等待授权`，避免只有构建成功却没有包含修复。
 
 - 格式化计算期间，新增后缀先以原始文本显示，Worker 返回后更新为 Markdown；超长单段落仍存在浏览器布局成本。
 - 长代码块在闭合成围栏前不高亮（有意为之，换取流式性能）。

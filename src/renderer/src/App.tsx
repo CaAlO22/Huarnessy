@@ -1,7 +1,9 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { createOpencodeClient } from '@opencode-ai/sdk/client'
 import { createOpencodeClient as createQuestionClient, type QuestionRequest } from '@opencode-ai/sdk/v2/client'
 import { GradFlow } from 'gradflow'
+import { usePermissions } from './PermissionGate'
 import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
 import { sameWorkspace } from './workspace-path'
@@ -81,6 +83,11 @@ const revertedTurn = (sessionId: string, messages: MessageEntry[], messageID?: s
 }
 
 const unwrap = (r: any): any => (r && r.data !== undefined ? r.data : r)
+
+// 内核 create 未传 title 时会生成 "New session - <ISO>" 默认标题，并只在标题匹配该格式时自动总结。
+const DEFAULT_SESSION_TITLE = /^(New session - |Child session - )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+const sessionLabel = (title?: string): string =>
+  !title ? '未命名会话' : DEFAULT_SESSION_TITLE.test(title) ? '新会话' : title
 
 const toolColors: Record<string, string> = {
   read: 'read',
@@ -350,6 +357,11 @@ const MessageView = memo(function MessageView({ msg, inReply = false, visibleCha
   )
 })
 
+// Folding a card taller than the viewport removes height above the reader, so
+// the content below snaps up. The provider receives the collapsing card and
+// glides the scroll position so that motion reads as a smooth scroll instead.
+const CollapseScrollContext = createContext<((card: HTMLElement | null) => void) | null>(null)
+
 const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visibleChars, liquidGlass }: {
   messages: MessageEntry[]
   order: number
@@ -365,6 +377,14 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
   const lens = useLiquidGlassSurface<HTMLElement>(liquidGlass)
   const [expanded, setExpanded] = useState(!foldedByNext)
   const previousFolded = useRef(foldedByNext)
+  const collapseScroll = useContext(CollapseScrollContext)
+
+  // Folding a card taller than the viewport drops height the reader cannot see,
+  // which snaps the content below up. Tell the pane to glide the scroll instead.
+  const collapse = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    collapseScroll?.(event.currentTarget.closest('.hui-call-block') as HTMLElement | null)
+    setExpanded(false)
+  }
 
   // React only to a new call boundary, not to every streamed delta. A user
   // may reopen an older block without the next update closing it again.
@@ -390,7 +410,7 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
     <section ref={lens.ref} style={lens.style} className={`hui-call-block ${liquidGlass ? 'glass-liquid' : ''} ${foldedByNext ? 'is-step' : 'is-active'}`} data-expanded={expanded} data-message-id={msg.info?.id}>
       {lens.filter}
       {foldedByNext ? (
-        <button className="hui-call-header" type="button" aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
+        <button className="hui-call-header" type="button" aria-expanded={expanded} aria-controls={panelId} onClick={(event) => { if (expanded) collapse(event); else setExpanded(true) }}>
           <span className="hui-call-chevron" aria-hidden="true" />
           <span className="hui-call-heading">步骤 {order}</span>
           {tools.size > 0 ? (
@@ -408,6 +428,13 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
           <MessageView msg={msg} inReply visibleChars={visibleChars} />
         </div>
       </div>
+      {foldedByNext && expanded ? (
+        <div className="hui-call-foot">
+          <button className="hui-call-collapse" type="button" aria-label="收起步骤" title="收起" onClick={collapse}>
+            <span className="hui-call-chevron" aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
     </section>
   )
 }, (previous, next) => previous.order === next.order
@@ -419,6 +446,63 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
 
 const stepRangeSize = 10
 const recentCallCount = 3
+
+// A compaction message is a kernel-generated assistant summary; it has no user
+// echo, so it must not join a normal reply turn.
+const isCompactionMessage = (message: MessageEntry): boolean =>
+  message.info?.role === 'assistant' && message.info?.summary === true
+
+// Kernel-driven compaction gets one centered bubble. It mirrors the reply wait
+// lifecycle ("等待会话压缩" -> streamed summary) through ReplyPresentation, then
+// folds into a step-style card ("会话已压缩") the reader can reopen.
+const CompactionBlock = memo(function CompactionBlock({ msg, liquidGlass }: {
+  msg: MessageEntry
+  liquidGlass: boolean
+}): React.ReactElement {
+  const panelId = useId()
+  const completed = msg.info?.time?.completed != null
+  const hasText = msg.parts.some(hasVisiblePart)
+  const [expanded, setExpanded] = useState(!completed)
+  const lens = useLiquidGlassSurface<HTMLElement>(liquidGlass && completed)
+  const collapseScroll = useContext(CollapseScrollContext)
+  // A freshly completed summary collapses with the shared step animation; a
+  // summary loaded from history mounts already folded, without replaying it.
+  useEffect(() => { if (completed) setExpanded(false) }, [completed])
+
+  const collapse = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    collapseScroll?.(event.currentTarget.closest('.hui-call-block') as HTMLElement | null)
+    setExpanded(false)
+  }
+
+  if (!completed) {
+    return (
+      <ReplyPresentation waiting={!hasText} waitLabel="等待会话压缩" center wideWait liquidGlass={liquidGlass}>
+        <div className="hui-compaction-body"><MessageView msg={msg} inReply /></div>
+      </ReplyPresentation>
+    )
+  }
+  return (
+    <section ref={lens.ref} style={lens.style} className={`hui-call-block is-step hui-compaction ${liquidGlass ? 'glass-liquid' : ''}`} data-expanded={expanded} data-message-id={msg.info?.id}>
+      <button className="hui-call-header" type="button" aria-expanded={expanded} aria-controls={panelId} onClick={(event) => { if (expanded) collapse(event); else setExpanded(true) }}>
+        <span className="hui-call-chevron" aria-hidden="true" />
+        <span className="hui-call-heading">会话已压缩</span>
+        <span className="hui-call-state">{expanded ? '收起' : '展开'}</span>
+      </button>
+      <div className="hui-call-reveal" aria-hidden={!expanded} inert={!expanded}>
+        <div id={panelId} className="hui-call-content">
+          <MessageView msg={msg} inReply />
+        </div>
+      </div>
+      {expanded ? (
+        <div className="hui-call-foot">
+          <button className="hui-call-collapse" type="button" aria-label="收起压缩摘要" title="收起" onClick={collapse}>
+            <span className="hui-call-chevron" aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+    </section>
+  )
+})
 
 function StepRange({ groups, start, liquidGlass, onExpand }: {
   groups: MessageEntry[][]
@@ -549,18 +633,37 @@ function GlassSelect({ value, onChange, options, title, disabled, empty }: {
 }): React.ReactElement {
   const [open, setOpen] = useState(false)
   const [focusIndex, setFocusIndex] = useState(0)
+  const [panelPos, setPanelPos] = useState<{ left: number; bottom: number } | null>(null)
   const root = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const listId = useId()
   const selectedIndex = options.findIndex(option => option.value === value)
   useEffect(() => {
     if (!open) return
     const closeOutside = (event: PointerEvent): void => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      if (!root.current?.contains(target) && !panelRef.current?.contains(target)) setOpen(false)
     }
     document.addEventListener('pointerdown', closeOutside)
     return () => document.removeEventListener('pointerdown', closeOutside)
   }, [open])
   useEffect(() => { if (disabled) setOpen(false) }, [disabled])
+  // The composer's own backdrop-filter makes it a Backdrop Root, so a panel
+  // inside it could only blur the composer itself. Portaling to the body lets
+  // the panel's frost sample the conversation behind it.
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return
+    const trigger = triggerRef.current
+    const place = (): void => {
+      const rect = trigger.getBoundingClientRect()
+      const width = Math.min(300, window.innerWidth - 110)
+      setPanelPos({ left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)), bottom: window.innerHeight - rect.top + 10 })
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [open])
   return (
     <div ref={root} className="hui-picker no-drag" data-open={open}>
       <button type="button" title={title} disabled={disabled} aria-label={title} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}
@@ -574,24 +677,29 @@ function GlassSelect({ value, onChange, options, title, disabled, empty }: {
           }
           if (event.key === 'Enter' && open && options[focusIndex]) { onChange(options[focusIndex].value); setOpen(false) }
         }}
+        ref={triggerRef}
         className="hui-picker-trigger">
         <span className="truncate">{options[selectedIndex]?.label ?? empty}</span><span className="hui-picker-chevron" aria-hidden="true">⌄</span>
       </button>
-      <div id={listId} role="listbox" aria-label={title} className="hui-picker-panel glass" style={plainGlassFilter}>
-        <div className="hui-picker-scroll">
-          {options.map((option, index) => (
-            <div key={option.value}>
-              {option.group && (index === 0 || options[index - 1].group !== option.group) ? <div className="hui-picker-group">{option.group}</div> : null}
-              <button type="button" role="option" aria-selected={value === option.value} tabIndex={-1}
-                className="hui-picker-option" data-focused={focusIndex === index}
-                onMouseEnter={() => setFocusIndex(index)}
-                onClick={() => { onChange(option.value); setOpen(false) }}>
-                <span className="truncate">{option.label}</span>{value === option.value ? <span aria-hidden="true">✓</span> : null}
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
+      {createPortal(
+        <div ref={panelRef} id={listId} role="listbox" aria-label={title} className="hui-picker-panel glass no-drag" data-open={open}
+          style={{ ...plainGlassFilter, left: panelPos?.left ?? -9999, bottom: panelPos?.bottom ?? -9999 }}>
+          <div className="hui-picker-scroll">
+            {options.map((option, index) => (
+              <div key={option.value}>
+                {option.group && (index === 0 || options[index - 1].group !== option.group) ? <div className="hui-picker-group">{option.group}</div> : null}
+                <button type="button" role="option" aria-selected={value === option.value} tabIndex={-1}
+                  className="hui-picker-option" data-focused={focusIndex === index}
+                  onMouseEnter={() => setFocusIndex(index)}
+                  onClick={() => { onChange(option.value); setOpen(false) }}>
+                  <span className="truncate">{option.label}</span>{value === option.value ? <span aria-hidden="true">✓</span> : null}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 }
@@ -648,6 +756,13 @@ export default function App(): React.ReactElement {
   const [choosingWorkspace, setChoosingWorkspace] = useState(false)
   const [sessions, setSessions] = useState<any[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [unlimitedPermissions, setUnlimitedPermissions] = useState(() => {
+    try { return localStorage.getItem('hui.unlimitedPermissions') === 'true' } catch { return false }
+  })
+  const { dialog: permissionDialog, receive: receivePermission, reload: reloadPermissions } = usePermissions(server?.status === 'ready' ? server.url : undefined, workspace, activeId, unlimitedPermissions)
+  useEffect(() => {
+    try { localStorage.setItem('hui.unlimitedPermissions', String(unlimitedPermissions)) } catch { /* Keep the preference for this window. */ }
+  }, [unlimitedPermissions])
   const [messages, setMessages] = useState<MessageEntry[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -660,6 +775,10 @@ export default function App(): React.ReactElement {
   const questionClientRef = useRef<ReturnType<typeof createQuestionClient> | null>(null)
   const questionVersion = useRef(0)
   const [busy, setBusy] = useState(false)
+  // Compaction is driven by the kernel, not a submitted prompt, so it gets its
+  // own centered bubble instead of a user echo plus a reply turn.
+  const [compactingSessionId, setCompactingSessionId] = useState<string | null>(null)
+  const compactionKnownIds = useRef(new Set<string>())
   const beforeRequestUserId = useRef<string | null>(null)
   const pendingTurnKey = useRef<string | null>(null)
   const turnKeySequence = useRef(0)
@@ -698,6 +817,7 @@ export default function App(): React.ReactElement {
   const stickBottom = useRef(true)
   const userScrolling = useRef(false)
   const rangeReading = useRef(false)
+  const collapseScrollFrame = useRef<number | null>(null)
   const deletedSessions = useRef(new Set<string>())
   const sessionListVersion = useRef(0)
   const deletingRef = useRef<{ client: any; id: string } | null>(null)
@@ -760,11 +880,12 @@ export default function App(): React.ReactElement {
   useEffect(() => { setSlashHighlight(0) }, [slashQuery, commands])
   useEffect(() => { setSlashDismissed(false) }, [input])
 
-  const applyCommand = useCallback((command: CommandOption) => {
+  const applyCommand = (command: CommandOption): void => {
+    if (command.builtin) { void runBuiltin(command.name); return }
     setInput(`/${command.name} `)
     setSlashDismissed(true)
     requestAnimationFrame(() => textareaRef.current?.focus())
-  }, [])
+  }
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -1155,6 +1276,7 @@ export default function App(): React.ReactElement {
     eventUrl.searchParams.set('directory', workspace)
     const es = new EventSource(eventUrl.href)
     esRef.current = es
+    es.onopen = () => { if (clientRef.current === client) void reloadPermissions() }
     es.onmessage = (e) => {
       if (clientRef.current !== client) return
       let evt: any
@@ -1169,6 +1291,7 @@ export default function App(): React.ReactElement {
       const p = evt?.properties ?? {}
       if (p.info?.directory && !sameWorkspace(p.info.directory, workspace)) return
       const active = activeIdRef.current
+      if (t === 'permission.asked' || t === 'permission.replied') receivePermission(t, p)
 
       switch (t) {
         case 'question.asked':
@@ -1257,7 +1380,9 @@ export default function App(): React.ReactElement {
     flushEvents,
     closeSessionMenu,
     forgetSession,
-    resetWorkspaceView
+    resetWorkspaceView,
+    receivePermission,
+    reloadPermissions
   ])
 
   useEffect(() => {
@@ -1291,6 +1416,35 @@ export default function App(): React.ReactElement {
     userScrolling.current = false
   }
 
+  // Folding a card taller than the pane drops height that is scrolled above the
+  // viewport, so with scroll anchoring off the content below snaps upward. This
+  // tracks the card's animating height and moves the scroll up by the same
+  // amount each frame, turning that snap into a smooth scroll. It is skipped at
+  // the bottom (the ResizeObserver already follows) and when the card top is in
+  // view (the fold is already an in-place motion).
+  const adjustScrollForCollapse = useCallback((card: HTMLElement | null): void => {
+    const el = scrollRef.current
+    if (!el || !card) return
+    if (collapseScrollFrame.current !== null) { cancelAnimationFrame(collapseScrollFrame.current); collapseScrollFrame.current = null }
+    if (stickBottom.current) return
+    const containerTop = el.getBoundingClientRect().top
+    if (card.getBoundingClientRect().top >= containerTop - 1) return
+    const startTop = el.scrollTop
+    const startHeight = card.getBoundingClientRect().height
+    const started = performance.now()
+    const follow = (now: number): void => {
+      if (!card.isConnected) { collapseScrollFrame.current = null; return }
+      const collapsed = Math.max(0, startHeight - card.getBoundingClientRect().height)
+      el.scrollTop = Math.max(0, startTop - collapsed)
+      collapseScrollFrame.current = now - started < 520 ? requestAnimationFrame(follow) : null
+    }
+    collapseScrollFrame.current = requestAnimationFrame(follow)
+  }, [])
+
+  useEffect(() => () => {
+    if (collapseScrollFrame.current !== null) cancelAnimationFrame(collapseScrollFrame.current)
+  }, [])
+
   useEffect(() => {
     if (selectedModel) localStorage.setItem('hui.model', JSON.stringify(selectedModel))
   }, [selectedModel])
@@ -1303,7 +1457,7 @@ export default function App(): React.ReactElement {
     const c = clientRef.current
     if (!c) return
     try {
-      const r = await c.session.create({ body: { title: 'New Session' }, throwOnError: true })
+      const r = await c.session.create({ body: {}, throwOnError: true })
       if (c !== clientRef.current) return
       const s = unwrap(r)
       await loadSessions()
@@ -1346,7 +1500,7 @@ export default function App(): React.ReactElement {
     try {
       let id = activeIdRef.current
       if (!id) {
-        const r = await c.session.create({ body: { title: (text || attachments[0].name).slice(0, 48) }, throwOnError: true })
+        const r = await c.session.create({ body: {}, throwOnError: true })
         if (c !== clientRef.current) return
         const s = unwrap(r)
         id = s?.id ?? null
@@ -1528,38 +1682,51 @@ export default function App(): React.ReactElement {
       </ReplyPresentation>
     )
   }
+  const compactingActive = compactingSessionId !== null && compactingSessionId === activeId
+  const compactionArrived = visibleMessages.some(message => isCompactionMessage(message) && !compactionKnownIds.current.has(message.info?.id))
   for (const [index, message] of visibleMessages.entries()) {
     if (message.info?.role === 'user') {
       appendReply(false)
       conversation.push(<MessageView key={message.info?.id ?? `user-${index}`} msg={message} liquidGlass={liquidGlass} onCopyError={setLastError} onRevert={revertMessage} reverting={revertingId === message.info?.id} revertDisabled={revertingId !== null} />)
       turnKey = turnKeys.current.get(message.info?.id) ?? `reply-${message.info?.id ?? index}`
       turnReplies = []
+    } else if (isCompactionMessage(message)) {
+      // Close the current turn so the centered compaction card stands alone,
+      // then advance the turn key so a following reply turn cannot reuse it.
+      appendReply(false)
+      conversation.push(<CompactionBlock key={message.info?.id ?? `compaction-${index}`} msg={message} liquidGlass={liquidGlass} />)
+      turnKey = `reply-${message.info?.id ?? index}`
+      turnReplies = []
     } else {
       turnReplies.push(message)
     }
   }
-  appendReply(busy && !awaitingUserEcho)
-  if (busy && awaitingUserEcho) {
+  appendReply(busy && !awaitingUserEcho && !compactingActive)
+  if (busy && awaitingUserEcho && !compactingActive) {
     conversation.push(<ReplyPresentation key={pendingTurnKey.current ?? 'reply-pending'} waiting liquidGlass={liquidGlass} />)
   }
+  // Compaction is kernel-driven: no user echo precedes it, so show a centered
+  // wait bubble until the summary message itself arrives.
+  if (compactingActive && !compactionArrived) {
+    conversation.push(<ReplyPresentation key="compaction-pending" waiting waitLabel="等待会话压缩" center wideWait liquidGlass={liquidGlass} />)
+  }
 
-  // Runs a client-side built-in command, or falls through to a normal prompt
-  // (which itself may dispatch a user-defined `/command`).
-  const submit = async (): Promise<void> => {
-    const match = /^\/(\S+)(?:\s+[\s\S]*)?$/.exec(input.trim())
-    const builtin = match ? builtinCommands.find(item => item.name === match[1].toLowerCase()) : undefined
-    if (!builtin) { await send(); return }
+  // Runs a client-side built-in command immediately: these take no arguments,
+  // so selecting one from the slash menu executes instead of completing text.
+  const runBuiltin = async (name: string): Promise<void> => {
     if (busy || !server?.url) return
     setSlashDismissed(true)
     setInput('')
     setLastError(null)
     const c = clientRef.current
     const sessionId = activeIdRef.current
-    if (builtin.name === 'new') { await newSession(); return }
+    if (name === 'new') { await newSession(); return }
     if (!c || !sessionId) { setLastError('请先开始一段对话再使用该命令'); return }
-    if (builtin.name === 'compact') {
+    if (name === 'compact') {
       if (!selectedModel) { setLastError('请先选择模型再压缩上下文'); return }
       setBusy(true)
+      setCompactingSessionId(sessionId)
+      compactionKnownIds.current = new Set(visibleMessages.filter(isCompactionMessage).map(message => message.info?.id).filter((id): id is string => !!id))
       try {
         await c.session.summarize({ path: { id: sessionId }, body: selectedModel, throwOnError: true })
         if (c === clientRef.current && sessionId === activeIdRef.current) refreshMessages()
@@ -1567,22 +1734,33 @@ export default function App(): React.ReactElement {
         if (c === clientRef.current) setLastError(`压缩失败：${error instanceof Error ? error.message : String(error)}`)
       } finally {
         if (c === clientRef.current) setBusy(false)
+        setCompactingSessionId(current => current === sessionId ? null : current)
       }
       return
     }
-    if (builtin.name === 'undo') {
+    if (name === 'undo') {
       if (!lastUser) { setLastError('没有可撤回的用户消息'); return }
       await revertMessage(lastUser)
       return
     }
-    if (builtin.name === 'redo') {
+    if (name === 'redo') {
       if (!(reverted && reverted.sessionId === activeId)) { setLastError('当前没有可恢复的撤回'); return }
       await restoreReverted()
     }
   }
 
+  // Falls through to a normal prompt (which itself may dispatch a
+  // user-defined `/command`) when the input is not a built-in command.
+  const submit = async (): Promise<void> => {
+    const match = /^\/(\S+)(?:\s+[\s\S]*)?$/.exec(input.trim())
+    const builtin = match ? builtinCommands.find(item => item.name === match[1].toLowerCase()) : undefined
+    if (!builtin) { await send(); return }
+    await runBuiltin(builtin.name)
+  }
+
   return (
-    <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
+    <CollapseScrollContext.Provider value={adjustScrollForCollapse}>
+      <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
       <div className="app-bg" data-mode={backgroundMode} aria-hidden="true">
         {backgroundMode === 'color' ? <GradFlow config={colorFlow} /> : null}
         {backgroundMode === 'subtle' ? <MottledBackground /> : null}
@@ -1626,7 +1804,14 @@ export default function App(): React.ReactElement {
             </button>
             {settingsOpen ? (
               <div id="hui-appearance-settings" className="glass hui-settings-panel absolute right-0 top-9 w-72 rounded-xl p-4 shadow-2xl">
-                <div className="mb-3 text-sm font-semibold text-white/90">外观设置</div>
+                <div className="mb-3 text-sm font-semibold text-white/90">设置</div>
+                <div className="hui-unlimited-permissions mb-4 rounded-lg border p-3">
+                  <label className="flex cursor-pointer items-center justify-between gap-3 text-xs font-semibold">
+                    <span>默认无限权限</span>
+                    <input type="checkbox" aria-label="默认无限权限" checked={unlimitedPermissions} onChange={event => setUnlimitedPermissions(event.target.checked)} className="hui-liquid-toggle" />
+                  </label>
+                  <p className="mt-2 text-[11px] leading-relaxed">开启后自动放行当前工作空间内所有会话的工具权限请求，包括访问工作空间外的文件和执行命令。</p>
+                </div>
                 <fieldset className="hui-background-choices">
                   <legend className="mb-2 text-xs text-white/75">背景</legend>
                   {backgroundModes.map(mode => (
@@ -1676,7 +1861,7 @@ export default function App(): React.ReactElement {
                 </div>
                 <label className="mt-4 flex cursor-pointer items-center justify-between border-t border-white/10 pt-3 text-xs text-white/75">
                   <span>对话气泡折射 · 实验效果</span>
-                  <input type="checkbox" checked={liquidGlass} onChange={event => setLiquidGlass(event.target.checked)} className="hui-liquid-toggle" />
+                  <input type="checkbox" aria-label="对话气泡折射" checked={liquidGlass} onChange={event => setLiquidGlass(event.target.checked)} className="hui-liquid-toggle" />
                 </label>
               </div>
             ) : null}
@@ -1756,9 +1941,9 @@ export default function App(): React.ReactElement {
                       ? 'glass-soft text-white'
                       : 'text-white/60 hover:bg-white/8 hover:text-white/90'
                   }`}
-                  title={s.title}
+                  title={sessionLabel(s.title)}
                 >
-                  {deletingId === s.id ? '正在删除…' : s.title || '未命名会话'}
+                  {deletingId === s.id ? '正在删除…' : sessionLabel(s.title)}
                 </button>
               ))
             )}
@@ -1952,9 +2137,10 @@ export default function App(): React.ReactElement {
             ) : null}
             </div>
           </div>
-          {questions[0] && questions[0].sessionID === activeId ? <QuestionDialog key={questions[0].id} request={questions[0]} busy={answeringQuestion} onReply={answers => void resolveQuestion(questions[0], answers)} onReject={() => void resolveQuestion(questions[0])} /> : null}
+          {permissionDialog ?? (questions[0] && questions[0].sessionID === activeId ? <QuestionDialog key={questions[0].id} request={questions[0]} busy={answeringQuestion} onReply={answers => void resolveQuestion(questions[0], answers)} onReject={() => void resolveQuestion(questions[0])} /> : null)}
         </main>
       </div>
     </div>
+    </CollapseScrollContext.Provider>
   )
 }
