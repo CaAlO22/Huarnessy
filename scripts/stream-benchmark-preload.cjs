@@ -23,6 +23,10 @@ window.benchSessions = [
 ]
 window.benchRequests = []
 window.benchMessages = {}
+window.benchClipboard = ''
+Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+  writeText: async text => { window.benchClipboard = text }
+} })
 let created = 0
 window.fetch = async (url, options) => {
   const requestUrl = new URL(typeof url === 'string' ? url : url.url, 'http://127.0.0.1:1')
@@ -40,6 +44,18 @@ window.fetch = async (url, options) => {
   }
   if (path.endsWith('/prompt_async')) return new Response(null, { status: 204 })
   if (path.endsWith('/abort')) return new Response('true', { headers: { 'Content-Type': 'application/json' } })
+  if (path === '/session/status') return new Response('{}', { headers: { 'Content-Type': 'application/json' } })
+  if (/^\/session\/[^/]+\/revert$/.test(path) && method === 'POST') {
+    if (window.benchRevertFailure) return new Response(JSON.stringify({ message: '测试撤回失败' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+    const session = window.benchSessions.find(item => item.id === path.split('/')[2])
+    session.revert = { messageID: body.messageID }
+    return new Response(JSON.stringify(session), { headers: { 'Content-Type': 'application/json' } })
+  }
+  if (/^\/session\/[^/]+\/unrevert$/.test(path) && method === 'POST') {
+    const session = window.benchSessions.find(item => item.id === path.split('/')[2])
+    delete session.revert
+    return new Response(JSON.stringify(session), { headers: { 'Content-Type': 'application/json' } })
+  }
   if (method === 'DELETE') {
     if (window.benchDeleteFailure) return new Response(JSON.stringify({ message: '测试删除失败' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
     if (window.benchHoldDelete) await new Promise(resolve => { window.benchReleaseDelete = resolve })
@@ -53,6 +69,9 @@ window.fetch = async (url, options) => {
     data = (window.benchNextList ?? window.benchSessions).map(session => ({ directory: window.benchDefaultWorkspace, ...session }))
     window.benchNextList = null
     if (window.benchHoldList === directory) await new Promise(resolve => { window.benchReleaseList = resolve })
+  }
+  else if (/^\/session\/[^/]+$/.test(path) && method === 'GET') {
+    data = window.benchSessions.find(session => session.id === path.split('/')[2]) ?? null
   }
   else if (/^\/session\/[^/]+\/message$/.test(path)) {
     const id = path.split('/')[2]

@@ -3,7 +3,10 @@ const assert = require('node:assert/strict')
 const { join } = require('node:path')
 const workspaceRegressions = require('./workspace-regressions.cjs')
 const replyUIRegressions = require('./reply-ui-regressions.cjs')
+const messageActionsRegressions = require('./message-actions-regressions.cjs')
 const { writeFile } = require('node:fs/promises')
+const screenshotRunId = `${Date.now()}-${process.pid}`
+const previewPath = name => join(__dirname, '../out', `${screenshotRunId}-${name}`)
 
 const run = async (kind, scale = 1) => {
   const sessionID = 'benchmark-session'
@@ -287,30 +290,81 @@ app.whenReady().then(async () => {
     if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ replyUI: await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})()`) }))
     if (process.env.BENCH_SCREENSHOT) {
       await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})(true)`)
-      await writeFile(join(__dirname, '../out/reply-wait-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await writeFile(previewPath('reply-wait-preview.png'), (await window.webContents.capturePage()).toPNG())
       await window.webContents.executeJavaScript(`window.benchEmit('message.part.updated', { part: { sessionID: 'benchmark-session', messageID: 'ui-reply', id: 'ui-reply-part', type: 'text', text: '收到啦，回复会从这里自然展开。\\n\\n等待条收拢后，正文继续实时显示。' } }); window.benchEmit('session.error', { sessionID: 'benchmark-session', error: { message: '' } })`)
       await new Promise(resolve => setTimeout(resolve, 750))
-      await writeFile(join(__dirname, '../out/reply-content-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await writeFile(previewPath('reply-content-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`(() => {
+        if (document.querySelector('#hui-appearance-settings')) document.querySelector('button[aria-label="外观设置"]').click()
+        document.querySelector('.hui-user-message')?.parentElement?.style.setProperty('display', 'none')
+        document.querySelector('.app-bg').style.background = 'radial-gradient(80% 80% at 82% 12%, #a82963 0%, #551b42 55%, #150d20 100%)'
+      })()`)
+      await new Promise(resolve => setTimeout(resolve, 150))
+      await writeFile(previewPath('liquid-red-edge-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="外观设置"]').click()`)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      await window.webContents.executeJavaScript(`document.querySelector('.hui-liquid-toggle').click(); document.querySelector('button[aria-label="外观设置"]').click()`)
+      await new Promise(resolve => setTimeout(resolve, 120))
+      await writeFile(previewPath('liquid-red-edge-off-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="外观设置"]').click()`)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      await window.webContents.executeJavaScript(`document.querySelector('.hui-liquid-toggle').click(); document.querySelector('button[aria-label="外观设置"]').click()`)
+      await window.webContents.executeJavaScript(`document.querySelector('.hui-user-message')?.parentElement?.style.removeProperty('display'); document.querySelector('.app-bg').style.removeProperty('background')`)
+      await window.webContents.executeJavaScript(`if (!document.querySelector('#hui-appearance-settings')) document.querySelector('button[aria-label="外观设置"]')?.click()`)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      await window.webContents.executeJavaScript(`document.querySelector('.app-bg').style.background = 'repeating-linear-gradient(135deg, #eef3ff 0 80px, #090d18 80px 160px)'`)
+      await writeFile(previewPath('liquid-through-frost-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`(() => {
+        document.querySelector('.app-bg').style.background = 'repeating-linear-gradient(135deg, #eef3ff 0 5px, #090d18 5px 54px)'
+        const backdrop = document.querySelector('.hui-chat-pane-backdrop')
+        backdrop.style.backdropFilter = 'none'
+        backdrop.style.webkitBackdropFilter = 'none'
+        backdrop.style.background = 'rgba(10, 13, 24, .18)'
+        if (document.querySelector('.hui-liquid-toggle').checked) document.querySelector('.hui-liquid-toggle').click()
+        document.querySelector('button[aria-label="外观设置"]').click()
+      })()`)
+      await new Promise(resolve => setTimeout(resolve, 150))
+      await writeFile(previewPath('liquid-off-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`document.querySelector('button[aria-label="外观设置"]').click()`)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      await window.webContents.executeJavaScript(`document.querySelector('.hui-liquid-toggle').click(); document.querySelector('button[aria-label="外观设置"]').click()`)
+      await new Promise(resolve => setTimeout(resolve, 150))
+      await writeFile(previewPath('liquid-on-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`document.querySelector('.app-bg').style.removeProperty('background')`)
+      await window.webContents.executeJavaScript(`const backdrop = document.querySelector('.hui-chat-pane-backdrop'); backdrop.style.backdropFilter = 'blur(22px) saturate(160%)'; backdrop.style.webkitBackdropFilter = 'blur(22px) saturate(160%)'; backdrop.style.removeProperty('background')`)
       await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
       await new Promise(resolve => setTimeout(resolve, 100))
       await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})('steps')`)
-      await writeFile(join(__dirname, '../out/step-collapsed-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await writeFile(previewPath('step-collapsed-preview.png'), (await window.webContents.capturePage()).toPNG())
       const header = await window.webContents.executeJavaScript(`(() => { const r = document.querySelector('.hui-call-block.is-step .hui-call-header').getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } })()`)
       window.webContents.sendInputEvent({ type: 'mouseMove', ...header })
       await new Promise(resolve => setTimeout(resolve, 100))
-      await writeFile(join(__dirname, '../out/step-hover-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await writeFile(previewPath('step-hover-preview.png'), (await window.webContents.capturePage()).toPNG())
       window.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...header })
       window.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...header })
       await new Promise(resolve => setTimeout(resolve, 130))
-      await writeFile(join(__dirname, '../out/step-opening-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await writeFile(previewPath('step-opening-preview.png'), (await window.webContents.capturePage()).toPNG())
       await new Promise(resolve => setTimeout(resolve, 430))
       window.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...header })
       window.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...header })
       await new Promise(resolve => setTimeout(resolve, 130))
-      await writeFile(join(__dirname, '../out/step-closing-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await writeFile(previewPath('step-closing-preview.png'), (await window.webContents.capturePage()).toPNG())
       await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()`)
       await new Promise(resolve => setTimeout(resolve, 100))
+      await window.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.hui-chat-pane button')).find(b => b.textContent.trim() === '✕')?.click()`)
+      const mathText = '当 x 很小时，例如 $\\sin x \\approx x$，$1-\\cos x \\approx \\frac{x^2}{2}$。\n下一行继续说明这个近似。'
+      await window.webContents.executeJavaScript(`window.benchEmit('message.updated', { info: { sessionID: 'benchmark-session', id: 'math-preview', role: 'assistant' } }); window.benchEmit('message.part.updated', { part: { sessionID: 'benchmark-session', messageID: 'math-preview', id: 'math-preview-part', type: 'text', text: ${JSON.stringify(mathText)}, time: { end: 1 } } })`)
+      await new Promise(resolve => setTimeout(resolve, 400))
+      await writeFile(previewPath('math-preview.png'), (await window.webContents.capturePage()).toPNG())
+      console.log(JSON.stringify({ mathLayout: await window.webContents.executeJavaScript(`(() => { const p = document.querySelector('.hui-md p:has(.mfrac)'); const f = p?.querySelector('.mfrac'); const r = f?.getBoundingClientRect(); const pr = p?.getBoundingClientRect(); return { paragraph: pr && { top: pr.top, bottom: pr.bottom, height: pr.height }, fraction: r && { top: r.top, bottom: r.bottom, height: r.height }, font: p && getComputedStyle(p).fontSize, lineHeight: p && getComputedStyle(p).lineHeight } })()`) }))
+      await window.webContents.executeJavaScript(`window.benchEmit('message.removed', { sessionID: 'benchmark-session', messageID: 'math-preview' })`)
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
+    if (process.env.BENCH_VISUAL_ONLY) {
+      console.log(JSON.stringify({ previewRun: screenshotRunId }))
+      return
+    }
+    if (process.env.BENCH_SCREENSHOT) await new Promise(resolve => setTimeout(resolve, 300))
     const layout = await window.webContents.executeJavaScript(`(${layoutRegressions.toString()})()`)
     console.log(JSON.stringify({ layout }))
     if (!process.env.BENCH_LAYOUT_RECORD) {
@@ -336,6 +390,14 @@ app.whenReady().then(async () => {
       console.log(JSON.stringify({ workspaces: await window.webContents.executeJavaScript(`(${workspaceRegressions.toString()})()`) }))
       if (process.env.BENCH_SCREENSHOT) await writeFile(process.env.BENCH_SCREENSHOT, (await window.webContents.capturePage()).toPNG())
       console.log(JSON.stringify({ sessionDeletion: await window.webContents.executeJavaScript(`(${sessionDeletionRegressions.toString()})()`) }))
+      console.log(JSON.stringify({ messageActions: await window.webContents.executeJavaScript(`(${messageActionsRegressions.toString()})()`) }))
+      if (process.env.BENCH_SCREENSHOT) {
+        await new Promise(resolve => setTimeout(resolve, 250))
+        await writeFile(previewPath('message-actions-buttons-preview.png'), (await window.webContents.capturePage()).toPNG())
+        await window.webContents.executeJavaScript(`document.querySelector('.hui-user-actions [aria-label="撤回消息"]').click()`)
+        await new Promise(resolve => setTimeout(resolve, 300))
+        await writeFile(previewPath('message-actions-reverted-preview.png'), (await window.webContents.capturePage()).toPNG())
+      }
     }
   } catch (error) {
     console.error(error)

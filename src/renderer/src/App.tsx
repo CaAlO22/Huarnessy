@@ -4,6 +4,7 @@ import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
 import { sameWorkspace } from './workspace-path'
 import { ReplyPresentation, hasVisiblePart } from './ReplyPresentation'
+import { useLiquidGlassSurface } from './LiquidGlass'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
 
 interface ServerInfo {
@@ -27,6 +28,27 @@ interface SelectedModel {
   modelID: string
 }
 
+interface RevertedTurn {
+  sessionId: string
+  messageID: string
+  hiddenIds: ReadonlySet<string>
+  rounds: number
+  restoreAvailable: boolean
+}
+
+const revertedTurn = (sessionId: string, messages: MessageEntry[], messageID?: string): RevertedTurn | null => {
+  if (!messageID) return null
+  const index = messages.findIndex(message => message.info?.id === messageID)
+  if (index < 0) return null
+  const hidden = messages.slice(index)
+  return {
+    sessionId, messageID,
+    hiddenIds: new Set(hidden.map(message => message.info?.id).filter(Boolean)),
+    rounds: hidden.filter(message => message.info?.role === 'user').length,
+    restoreAvailable: true
+  }
+}
+
 const unwrap = (r: any): any => (r && r.data !== undefined ? r.data : r)
 
 const toolColors: Record<string, string> = {
@@ -46,6 +68,14 @@ const toolColors: Record<string, string> = {
 const displayToolName = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1)
 
 const defaultPanelTransparency = 55
+const defaultChatFontSize = 15.5
+const readChatFontSize = (): number => {
+  try {
+    const saved = Number(localStorage.getItem('hui.chatFontSize'))
+    if (Number.isFinite(saved) && saved >= 13 && saved <= 20) return saved
+  } catch { /* Keep the default when local storage is unavailable. */ }
+  return defaultChatFontSize
+}
 const readPanelTransparency = (): number => {
   try {
     const saved = localStorage.getItem('hui.panelTransparency')
@@ -57,6 +87,13 @@ const readPanelTransparency = (): number => {
   return defaultPanelTransparency
 }
 
+const readLiquidGlass = (): boolean => {
+  try { return localStorage.getItem('hui.liquidGlass') !== 'false' } catch { return true }
+}
+const plainGlassFilter: CSSProperties = {
+  backdropFilter: 'blur(22px) saturate(160%)',
+  WebkitBackdropFilter: 'blur(22px) saturate(160%)'
+}
 const PartView = memo(function PartView({ part, completed, textLimit }: { part: any; completed: boolean; textLimit?: number }): React.ReactElement | null {
   const done = completed || part.time?.end != null
   let text: string = part.text ?? ''
@@ -127,7 +164,18 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
   return null
 })
 
-const MessageView = memo(function MessageView({ msg, inReply = false, visibleChars }: { msg: MessageEntry; inReply?: boolean; visibleChars?: number }): React.ReactElement | null {
+const MessageView = memo(function MessageView({ msg, inReply = false, visibleChars, liquidGlass = false, onCopyError, onRevert, reverting = false, revertDisabled = false }: {
+  msg: MessageEntry
+  inReply?: boolean
+  visibleChars?: number
+  liquidGlass?: boolean
+  onCopyError?: (message: string) => void
+  onRevert?: (message: MessageEntry) => void
+  reverting?: boolean
+  revertDisabled?: boolean
+}): React.ReactElement | null {
+  const lens = useLiquidGlassSurface<HTMLDivElement>(liquidGlass && !inReply)
+  const [copied, setCopied] = useState(false)
   const isUser = msg.info?.role === 'user'
   const visibleParts = msg.parts.filter(hasVisiblePart)
   if (visibleParts.length === 0) return null
@@ -139,26 +187,47 @@ const MessageView = memo(function MessageView({ msg, inReply = false, visibleCha
     return <PartView key={p.id ?? i} part={p} completed={isUser || msg.info?.time?.completed != null} textLimit={limit} />
   })
   if (inReply) return <div className="hui-message-parts flex min-w-0 flex-col gap-2" data-first-part={visibleParts[0].type} data-last-part={visibleParts[visibleParts.length - 1].type}>{parts}</div>
+  const copyText = msg.parts.filter(part => part.type === 'text').map(part => part.text ?? '').join('\n')
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(copyText)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch (error) {
+      onCopyError?.(`复制失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`hui-message-parts flex min-w-0 max-w-[82%] flex-col gap-2 rounded-2xl px-4 py-3 ${
-          isUser ? 'hui-user-message' : 'glass hui-message'
-        }`}
-      >
-        {parts}
+      <div className={isUser ? 'flex min-w-0 max-w-[82%] flex-col items-end gap-1' : 'w-full'}>
+        <div
+          ref={lens.ref}
+          style={lens.style}
+          className={`hui-message-parts flex min-w-0 flex-col gap-2 rounded-2xl px-4 py-3 ${isUser ? 'hui-user-message' : 'glass hui-message'} ${liquidGlass ? 'glass-liquid' : ''}`}
+        >
+          {lens.filter}
+          {parts}
+        </div>
+        {isUser ? (
+          <div className="hui-user-actions flex items-center gap-1">
+            <button type="button" onClick={() => void copy()} disabled={!copyText} aria-label="复制消息" className="hui-user-action">{copied ? '已复制' : '复制'}</button>
+            {onRevert ? <button type="button" onClick={() => onRevert(msg)} disabled={revertDisabled} aria-label="撤回消息" title="撤回此轮及之后的对话和相关工作区改动" className="hui-user-action hui-user-revert">{reverting ? '正在撤回…' : '撤回'}</button> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   )
 })
 
-const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleChars }: {
+const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleChars, liquidGlass }: {
   msg: MessageEntry
   order: number
   foldedByNext: boolean
   visibleChars?: number
+  liquidGlass: boolean
 }): React.ReactElement {
   const panelId = useId()
+  const lens = useLiquidGlassSurface<HTMLElement>(liquidGlass)
   const [expanded, setExpanded] = useState(!foldedByNext)
   const previousFolded = useRef(foldedByNext)
 
@@ -182,7 +251,8 @@ const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleCha
     }
   }
   return (
-    <section className={`hui-call-block ${foldedByNext ? 'is-step' : 'is-active'}`} data-expanded={expanded} data-message-id={msg.info?.id}>
+    <section ref={lens.ref} style={lens.style} className={`hui-call-block ${liquidGlass ? 'glass-liquid' : ''} ${foldedByNext ? 'is-step' : 'is-active'}`} data-expanded={expanded} data-message-id={msg.info?.id}>
+      {lens.filter}
       {foldedByNext ? (
         <button className="hui-call-header" type="button" aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
           <span className="hui-call-chevron" aria-hidden="true" />
@@ -248,8 +318,13 @@ export default function App(): React.ReactElement {
   const [lastError, setLastError] = useState<string | null>(null)
   const [sessionMenu, setSessionMenu] = useState<SessionMenuTarget | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [revertingId, setRevertingId] = useState<string | null>(null)
+  const [reverted, setReverted] = useState<RevertedTurn | null>(null)
+  const revertOperation = useRef<{ client: any; sessionId: string; messageId: string } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [panelTransparency, setPanelTransparency] = useState(readPanelTransparency)
+  const [chatFontSize, setChatFontSize] = useState(readChatFontSize)
+  const [liquidGlass, setLiquidGlass] = useState(readLiquidGlass)
   const settingsRef = useRef<HTMLDivElement | null>(null)
 
   const [models, setModels] = useState<ModelOption[]>([])
@@ -276,6 +351,14 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     try { localStorage.setItem('hui.panelTransparency', String(panelTransparency)) } catch { /* Preview still works. */ }
   }, [panelTransparency])
+
+  useEffect(() => {
+    try { localStorage.setItem('hui.chatFontSize', String(chatFontSize)) } catch { /* Preview still works. */ }
+  }, [chatFontSize])
+
+  useEffect(() => {
+    try { localStorage.setItem('hui.liquidGlass', String(liquidGlass)) } catch { /* Preview still works. */ }
+  }, [liquidGlass])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -417,7 +500,9 @@ export default function App(): React.ReactElement {
         // A delayed REST response must not replace a newer SSE update/session.
         if (epoch !== sessionEpoch.current || id !== activeIdRef.current || version !== revision.current) return
         flushEvents()
-        setMessages(unwrap(r) ?? [])
+        const snapshot: MessageEntry[] = unwrap(r) ?? []
+        setMessages(snapshot)
+        setReverted(previous => previous?.sessionId === id && !snapshot.some(message => previous.hiddenIds.has(message.info?.id)) ? null : previous)
       } catch (e) {
         console.error('load messages failed', e)
       }
@@ -431,16 +516,23 @@ export default function App(): React.ReactElement {
     clearEvents()
     turnKeys.current.clear()
     pendingTurnKey.current = null
+    revertOperation.current = null
+    setRevertingId(null)
     const epoch = sessionEpoch.current
     const version = revision.current
     setActiveId(id)
     activeIdRef.current = id
     setMessages([])
+    setReverted(null)
     try {
-      const r = await c.session.messages({ path: { id } })
+      const [r, sessionResult] = await Promise.all([
+        c.session.messages({ path: { id } }),
+        c.session.get({ path: { id } })
+      ])
       if (epoch !== sessionEpoch.current || id !== activeIdRef.current) return
       flushEvents()
       const snapshot: MessageEntry[] = unwrap(r) ?? []
+      setReverted(revertedTurn(id, snapshot, unwrap(sessionResult)?.revert?.messageID))
       setMessages(prev => {
         if (version === revision.current) return snapshot
         const live = new Map(prev.map(message => [message.info?.id, message]))
@@ -463,6 +555,9 @@ export default function App(): React.ReactElement {
       activeIdRef.current = null
       setActiveId(null)
       setMessages([])
+      setReverted(null)
+      revertOperation.current = null
+      setRevertingId(null)
       setBusy(false)
       setLastError(null)
       stickBottom.current = true
@@ -517,6 +612,9 @@ export default function App(): React.ReactElement {
     setActiveId(null)
     setSessions([])
     setMessages([])
+    setReverted(null)
+    setRevertingId(null)
+    revertOperation.current = null
     setModels([])
     setAgents([])
     setSelectedModel(null)
@@ -731,7 +829,7 @@ export default function App(): React.ReactElement {
     if (selectedModel) body.model = selectedModel
     if (selectedAgent) body.agent = selectedAgent
 
-    beforeRequestUserId.current = [...messages].reverse().find((message) => message.info?.role === 'user')?.info?.id ?? null
+    beforeRequestUserId.current = [...visibleMessages].reverse().find((message) => message.info?.role === 'user')?.info?.id ?? null
     pendingTurnKey.current = `reply-request-${++turnKeySequence.current}`
     setBusy(true)
     setLastError(null)
@@ -756,6 +854,9 @@ export default function App(): React.ReactElement {
       if (!id) { setBusy(false); return }
       setInput('')
       await c.session.promptAsync({ path: { id }, body, throwOnError: true })
+      if (c === clientRef.current && id === activeIdRef.current) {
+        setReverted(previous => previous?.sessionId === id ? { ...previous, restoreAvailable: false } : previous)
+      }
     } catch (e) {
       if (c !== clientRef.current) return
       setLastError(`发送失败：${e instanceof Error ? e.message : String(e)}`)
@@ -774,6 +875,81 @@ export default function App(): React.ReactElement {
     }
   }
 
+  const revertMessage = async (message: MessageEntry): Promise<void> => {
+    const c = clientRef.current
+    const sessionId = activeIdRef.current
+    const messageId = message.info?.id
+    if (!c || !sessionId || !messageId || revertOperation.current) return
+    const operation = { client: c, sessionId, messageId }
+    revertOperation.current = operation
+    setRevertingId(messageId)
+    setLastError(null)
+    try {
+      if (busy) {
+        await c.session.abort({ path: { id: sessionId }, throwOnError: true })
+        for (let attempt = 0; attempt < 30; attempt++) {
+          const result = await c.session.status({ query: { directory: workspaceRef.current ?? undefined }, throwOnError: true })
+          if (unwrap(result)?.[sessionId]?.type !== 'busy') break
+          if (attempt === 29) throw new Error('当前回复尚未停止，请稍后重试')
+          await new Promise(resolve => window.setTimeout(resolve, 100))
+        }
+      }
+      const result = await c.session.revert({ path: { id: sessionId }, body: { messageID: messageId }, throwOnError: true })
+      if (c !== clientRef.current || sessionId !== activeIdRef.current || revertOperation.current !== operation) return
+      const snapshotResult = await c.session.messages({ path: { id: sessionId }, throwOnError: true })
+      if (c !== clientRef.current || sessionId !== activeIdRef.current || revertOperation.current !== operation) return
+      const snapshot: MessageEntry[] = unwrap(snapshotResult) ?? []
+      const boundary = unwrap(result)?.revert?.messageID ?? messageId
+      const next = revertedTurn(sessionId, snapshot, boundary)
+      if (!next) throw new Error('无法确认撤回后的消息范围')
+      clearEvents()
+      setMessages(snapshot)
+      setReverted(next)
+      setBusy(false)
+      pendingTurnKey.current = null
+      await loadSessions()
+    } catch (error) {
+      if (c === clientRef.current && sessionId === activeIdRef.current && revertOperation.current === operation) {
+        setLastError(`撤回失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    } finally {
+      if (revertOperation.current === operation) {
+        revertOperation.current = null
+        setRevertingId(null)
+      }
+    }
+  }
+
+  const restoreReverted = async (): Promise<void> => {
+    const c = clientRef.current
+    const state = reverted
+    const sessionId = activeIdRef.current
+    if (!c || !state?.restoreAvailable || state.sessionId !== sessionId || busy || revertOperation.current) return
+    const operation = { client: c, sessionId, messageId: state.messageID }
+    revertOperation.current = operation
+    setRevertingId(state.messageID)
+    setLastError(null)
+    try {
+      await c.session.unrevert({ path: { id: sessionId }, throwOnError: true })
+      if (c !== clientRef.current || sessionId !== activeIdRef.current || revertOperation.current !== operation) return
+      const result = await c.session.messages({ path: { id: sessionId }, throwOnError: true })
+      if (c !== clientRef.current || sessionId !== activeIdRef.current || revertOperation.current !== operation) return
+      clearEvents()
+      setMessages(unwrap(result) ?? [])
+      setReverted(null)
+      await loadSessions()
+    } catch (error) {
+      if (c === clientRef.current && sessionId === activeIdRef.current && revertOperation.current === operation) {
+        setLastError(`恢复撤回失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    } finally {
+      if (revertOperation.current === operation) {
+        revertOperation.current = null
+        setRevertingId(null)
+      }
+    }
+  }
+
   const statusColor =
     server?.status === 'ready'
       ? 'bg-emerald-400'
@@ -781,7 +957,10 @@ export default function App(): React.ReactElement {
         ? 'bg-rose-400'
         : 'bg-amber-400'
 
-  const lastUser = [...messages].reverse().find((message) => message.info?.role === 'user')
+  const visibleMessages = useMemo(() => reverted && reverted.sessionId === activeId
+    ? messages.filter(message => !reverted.hiddenIds.has(message.info?.id))
+    : messages, [messages, reverted, activeId])
+  const lastUser = [...visibleMessages].reverse().find((message) => message.info?.role === 'user')
   const awaitingUserEcho = busy && (lastUser?.info?.id ?? null) === beforeRequestUserId.current
   if (busy && !awaitingUserEcho && lastUser?.info?.id && pendingTurnKey.current) {
     if (!turnKeys.current.has(lastUser.info.id)) turnKeys.current.set(lastUser.info.id, pendingTurnKey.current)
@@ -799,17 +978,17 @@ export default function App(): React.ReactElement {
     const textLength = replies.at(-1)?.parts.reduce((count, part) =>
       count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
     conversation.push(
-      <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength}>
+      <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength} liquidGlass={liquidGlass}>
         {(visibleChars) => replies.map((message, index) => (
-          <CallBlock key={message.info?.id ?? index} msg={message} order={index + 1} foldedByNext={index < replies.length - 1} visibleChars={index === replies.length - 1 ? visibleChars : undefined} />
+          <CallBlock key={message.info?.id ?? index} msg={message} order={index + 1} foldedByNext={index < replies.length - 1} visibleChars={index === replies.length - 1 ? visibleChars : undefined} liquidGlass={liquidGlass} />
         ))}
       </ReplyPresentation>
     )
   }
-  for (const [index, message] of messages.entries()) {
+  for (const [index, message] of visibleMessages.entries()) {
     if (message.info?.role === 'user') {
       appendReply(false)
-      conversation.push(<MessageView key={message.info?.id ?? `user-${index}`} msg={message} />)
+      conversation.push(<MessageView key={message.info?.id ?? `user-${index}`} msg={message} liquidGlass={liquidGlass} onCopyError={setLastError} onRevert={revertMessage} reverting={revertingId === message.info?.id} revertDisabled={revertingId !== null} />)
       turnKey = turnKeys.current.get(message.info?.id) ?? `reply-${message.info?.id ?? index}`
       turnReplies = []
     } else {
@@ -818,11 +997,12 @@ export default function App(): React.ReactElement {
   }
   appendReply(busy && !awaitingUserEcho)
   if (busy && awaitingUserEcho) {
-    conversation.push(<ReplyPresentation key={pendingTurnKey.current ?? 'reply-pending'} waiting />)
+    conversation.push(<ReplyPresentation key={pendingTurnKey.current ?? 'reply-pending'} waiting liquidGlass={liquidGlass} />)
   }
 
+
   return (
-    <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100 } as CSSProperties}>
+    <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
       <div className="app-bg" />
       {sessionMenu ? (
         <SessionContextMenu
@@ -880,6 +1060,28 @@ export default function App(): React.ReactElement {
                   <span className="text-[11px] text-white/50">只调整底色，文字保持清晰</span>
                   <button type="button" onClick={() => setPanelTransparency(defaultPanelTransparency)} className="shrink-0 text-[11px] text-cyan-200/80 hover:text-cyan-100">重置</button>
                 </div>
+                <div className="mt-4 border-t border-white/10 pt-3">
+                  <label htmlFor="hui-chat-font-size" className="flex justify-between text-xs text-white/75">
+                    <span>对话正文字号</span><span>{chatFontSize}px</span>
+                  </label>
+                  <input
+                    id="hui-chat-font-size"
+                    type="range"
+                    min="13"
+                    max="20"
+                    step="0.5"
+                    value={chatFontSize}
+                    onChange={(event) => setChatFontSize(Number(event.target.value))}
+                    className="hui-transparency-range mt-3 w-full"
+                  />
+                  <div className="mt-2 flex justify-end">
+                    <button type="button" onClick={() => setChatFontSize(defaultChatFontSize)} className="text-[11px] text-cyan-200/80 hover:text-cyan-100">重置</button>
+                  </div>
+                </div>
+                <label className="mt-4 flex cursor-pointer items-center justify-between border-t border-white/10 pt-3 text-xs text-white/75">
+                  <span>对话气泡折射 · 实验效果</span>
+                  <input type="checkbox" checked={liquidGlass} onChange={event => setLiquidGlass(event.target.checked)} className="hui-liquid-toggle" />
+                </label>
               </div>
             ) : null}
           </div>
@@ -905,7 +1107,7 @@ export default function App(): React.ReactElement {
       </header>
 
       <div className="flex min-h-0 flex-1 gap-3 p-3 pt-0">
-        <aside className="glass flex w-64 shrink-0 flex-col rounded-2xl p-3">
+        <aside className="glass flex w-64 shrink-0 flex-col rounded-2xl p-3" style={plainGlassFilter}>
           <button
             onClick={newSession}
             disabled={server?.status !== 'ready' || !workspace}
@@ -973,7 +1175,8 @@ export default function App(): React.ReactElement {
           </div>
         </aside>
 
-        <main className="glass flex min-w-0 flex-1 flex-col rounded-2xl">
+        <main className="glass hui-chat-pane flex min-w-0 flex-1 flex-col rounded-2xl" style={{ backdropFilter: 'none', WebkitBackdropFilter: 'none' }}>
+          <div className="hui-chat-pane-backdrop" style={plainGlassFilter} aria-hidden="true" />
           <div
             ref={scrollRef}
             onScroll={onScroll}
@@ -990,8 +1193,8 @@ export default function App(): React.ReactElement {
             }}
             className="hui-chat-scroll min-h-0 flex-1 overflow-y-auto p-5"
           >
-            <div ref={contentRef} className={`space-y-4 ${messages.length === 0 && !busy ? 'h-full' : ''}`}>
-              {messages.length === 0 && !busy ? (
+            <div ref={contentRef} className={`space-y-4 ${visibleMessages.length === 0 && !busy ? 'h-full' : ''}`}>
+              {visibleMessages.length === 0 && !busy ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
                   <div className="text-lg font-medium text-white/60">开始一段对话</div>
                   <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
@@ -1001,6 +1204,12 @@ export default function App(): React.ReactElement {
           </div>
 
           <div className="shrink-0 p-3 pt-0">
+            {reverted?.sessionId === activeId && reverted.restoreAvailable ? (
+              <div className="hui-revert-notice mb-2 flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-[12px]" role="status">
+                <span>已撤回 {reverted.rounds} 轮对话及相关工作区改动</span>
+                <button type="button" onClick={() => void restoreReverted()} disabled={busy || revertingId !== null} className="shrink-0 rounded-md px-2 py-1 font-medium text-cyan-200 transition hover:bg-white/10 disabled:opacity-40">{revertingId ? '恢复中…' : '恢复撤回'}</button>
+              </div>
+            ) : null}
             {lastError ? (
               <div className="mb-2 flex items-start justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-500/15 px-3 py-2 text-[12px] text-rose-100">
                 <span className="min-w-0 break-words">{lastError}</span>

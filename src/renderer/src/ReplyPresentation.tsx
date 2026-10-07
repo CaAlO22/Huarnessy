@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useLiquidGlassSurface } from './LiquidGlass'
 
 // Protocol bookkeeping has no visual surface of its own.
 export function hasVisiblePart(part: any): boolean {
@@ -8,10 +9,11 @@ export function hasVisiblePart(part: any): boolean {
 
 type Phase = 'waiting' | 'label-exit' | 'condensing' | 'dot-exit' | 'unfolding' | 'catching-up' | 'ready'
 
-export function ReplyPresentation({ waiting, textLength = 0, children }: {
+export function ReplyPresentation({ waiting, textLength = 0, children, liquidGlass = false }: {
   waiting: boolean
   textLength?: number
   children?: ReactNode | ((visibleChars: number | undefined) => ReactNode)
+  liquidGlass?: boolean
 }): React.ReactElement {
   const wasWaiting = useRef(waiting)
   const [phase, setPhase] = useState<Phase>(waiting ? 'waiting' : 'ready')
@@ -56,10 +58,13 @@ export function ReplyPresentation({ waiting, textLength = 0, children }: {
 
   const showWait = phase === 'waiting' || phase === 'label-exit' || phase === 'condensing' || phase === 'dot-exit'
   const showSurface = phase !== 'catching-up' && phase !== 'ready'
+  const lens = useLiquidGlassSurface<HTMLDivElement>(liquidGlass && showSurface)
   return (
     <div className="hui-reply-stage">
       <div
-        className={`${showSurface ? 'glass ' : ''}hui-message hui-reply-bubble is-${phase}`}
+        ref={lens.ref}
+        style={lens.style}
+        className={`${showSurface ? 'glass ' : ''}${liquidGlass && showSurface ? 'glass-liquid ' : ''}hui-message hui-reply-bubble is-${phase}`}
         onAnimationEnd={(event) => {
           if (event.target !== event.currentTarget) return
           if (phase === 'condensing' && event.animationName === 'hui-reply-condense') setPhase('dot-exit')
@@ -69,6 +74,7 @@ export function ReplyPresentation({ waiting, textLength = 0, children }: {
           }
         }}
       >
+        {lens.filter}
         {showWait ? (
           <div className="hui-reply-wait" role={waiting ? 'status' : undefined} aria-hidden={!waiting || undefined}>
             <span
