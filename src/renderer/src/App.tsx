@@ -218,9 +218,10 @@ const editToolMetrics = (state: any): string | null => {
   return `新增 ${added} 行 · 移除 ${removed} 行`
 }
 
-// A fixed-length light beam that rolls along the tool bubble border. The
-// perimeter is measured so the dash pattern tiles seamlessly and the beam
-// keeps a constant pixel length and speed regardless of bubble width.
+// A glowing beam that rolls along the tool bubble border. The perimeter is
+// measured so the dash pattern tiles seamlessly; beam length scales with the
+// bubble and the lap duration grows sub-linearly, so small bubbles travel at
+// a gentler pixel speed instead of flying around their short border.
 const ToolBeam = (): React.ReactElement => {
   const ref = useRef<SVGSVGElement>(null)
   useEffect(() => {
@@ -232,8 +233,13 @@ const ToolBeam = (): React.ReactElement => {
       const w = Math.max(2 * rx, box.width - 3)
       const h = Math.max(2 * rx, box.height - 3)
       const perimeter = 2 * (w - 2 * rx) + 2 * (h - 2 * rx) + 2 * Math.PI * rx
+      const beam = Math.min(160, Math.max(30, perimeter * 0.15))
+      const tail = Math.min(perimeter * 0.45, beam * 2.4)
+      const duration = 0.075 * Math.pow(perimeter, 0.45)
       el.style.setProperty('--hui-perimeter', perimeter.toFixed(2))
-      el.style.setProperty('--hui-beam-duration', `${(perimeter / 320).toFixed(2)}s`)
+      el.style.setProperty('--hui-beam', beam.toFixed(1))
+      el.style.setProperty('--hui-tail', tail.toFixed(1))
+      el.style.setProperty('--hui-beam-duration', `${duration.toFixed(2)}s`)
     }
     measure()
     const observer = new ResizeObserver(measure)
@@ -242,7 +248,8 @@ const ToolBeam = (): React.ReactElement => {
   }, [])
   return (
     <svg ref={ref} className="hui-tool-beam" aria-hidden="true">
-      <rect />
+      <rect className="hui-tool-beam-tail" />
+      <rect className="hui-tool-beam-core" />
     </svg>
   )
 }

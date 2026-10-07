@@ -729,9 +729,10 @@ body {
   --tool-surface: rgba(145, 101, 215, calc(0.27 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(184, 143, 244, 0.34);
 }
-/* Running tools get a fixed-length beam that rolls along the border. The
-   dash pattern length equals the measured perimeter (--hui-perimeter), so
-   the beam never stretches with the bubble and loops seamlessly. */
+/* Running tools get a glowing comet (bright core + faint wide tail) that
+   rolls along the border. Dash pattern lengths equal the measured perimeter
+   (--hui-perimeter) so it loops seamlessly; core/tail lengths and the lap
+   duration are derived from that perimeter in ToolBeam. */
 .hui-tool-call[data-running='true'] {
   position: relative;
   isolation: isolate;
@@ -744,7 +745,7 @@ body {
   overflow: visible;
   pointer-events: none;
   color: var(--tool-accent);
-  filter: drop-shadow(0 0 5px currentColor);
+  filter: drop-shadow(0 0 2px currentColor) drop-shadow(0 0 7px currentColor);
 }
 .hui-tool-beam rect {
   x: 1.5px;
@@ -753,13 +754,29 @@ body {
   height: calc(100% - 3px);
   rx: 13px;
   fill: none;
-  stroke: color-mix(in srgb, var(--tool-accent), #ffffff 55%);
-  stroke-width: 2.5;
   stroke-linecap: round;
-  stroke-dasharray: calc(var(--hui-beam-length, 150) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-beam-length, 150)) * 1px);
-  animation: hui-tool-beam-run var(--hui-beam-duration, 2.6s) linear infinite;
+  animation-duration: var(--hui-beam-duration, 2s);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.hui-tool-beam-core {
+  stroke: color-mix(in srgb, var(--tool-accent), #ffffff 35%);
+  stroke-width: 2;
+  stroke-dasharray: calc(var(--hui-beam, 140) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-beam, 140)) * 1px);
+  animation-name: hui-tool-beam-run;
+}
+.hui-tool-beam-tail {
+  stroke: var(--tool-accent);
+  stroke-width: 4.5;
+  opacity: .35;
+  stroke-dasharray: calc(var(--hui-tail, 330) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-tail, 330)) * 1px);
+  animation-name: hui-tool-beam-tail;
 }
 @keyframes hui-tool-beam-run { to { stroke-dashoffset: calc(var(--hui-perimeter, 900) * -1px); } }
+@keyframes hui-tool-beam-tail {
+  from { stroke-dashoffset: calc((var(--hui-tail, 330) - var(--hui-beam, 140)) * 1px); }
+  to { stroke-dashoffset: calc((var(--hui-tail, 330) - var(--hui-beam, 140) - var(--hui-perimeter, 900)) * 1px); }
+}
 /* One-shot ring flash when a running tool finishes. */
 .hui-tool-call[data-flash='true'] { position: relative; }
 .hui-tool-call[data-flash='true']::after {
