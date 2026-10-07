@@ -13,18 +13,30 @@ body {
   color-scheme: dark;
   font-family:
     'Noto Sans SC Variable', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
-  background: #07070c;
+  background: #090a0d;
 }
 
 .app-bg {
   position: fixed;
   inset: 0;
   z-index: -1;
-  background:
-    radial-gradient(55% 45% at 12% 8%, rgba(99, 102, 241, 0.38), transparent 62%),
-    radial-gradient(45% 40% at 88% 16%, rgba(236, 72, 153, 0.3), transparent 62%),
-    radial-gradient(65% 60% at 50% 108%, rgba(34, 211, 238, 0.24), transparent 62%),
-    #07070c;
+  overflow: hidden;
+  background: #090a0d;
+  pointer-events: none;
+}
+
+.app-bg[data-mode='color'] { background: linear-gradient(135deg, #1c1a2d, #142a31 52%, #302031); }
+.app-bg[data-mode='subtle'] { background: #0b0c0e; }
+.app-bg canvas { display: block; width: 100%; height: 100%; }
+.app-bg[data-mode='color']::after,
+.app-bg[data-mode='subtle']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(12, 13, 20, .24), rgba(8, 9, 14, .35));
+}
+.app-bg[data-mode='subtle']::after {
+  background: rgba(5, 6, 8, .12);
 }
 
 .glass {
@@ -96,7 +108,22 @@ body {
   background: rgba(71, 118, 157, calc(.24 * var(--hui-panel-strength, .45)));
   color: rgba(224, 241, 251, .82);
 }
-.hui-settings-panel { backdrop-filter: blur(22px) saturate(160%); }
+.hui-settings-panel { max-height: calc(100vh - 58px); overflow-y: auto; backdrop-filter: blur(22px) saturate(160%); }
+.hui-background-choices { margin: 0; padding: 0; border: 0; }
+.hui-background-choice { display: flex; align-items: center; gap: 10px; min-height: 49px; margin-top: 5px; padding: 6px 8px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.035); cursor: pointer; transition: background 160ms ease, border-color 160ms ease; }
+.hui-background-choice:hover { background: rgba(255,255,255,.09); }
+.hui-background-choice[data-selected='true'] { border-color: rgba(145,219,232,.55); background: rgba(91,177,194,.13); }
+.hui-background-choice:focus-within { outline: 2px solid rgba(145,219,232,.65); outline-offset: 2px; }
+.hui-background-choice input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.hui-background-choice strong, .hui-background-choice small { display: block; line-height: 1.35; }
+.hui-background-choice strong { color: rgba(255,255,255,.88); font-size: 11px; font-weight: 600; }
+.hui-background-choice small { margin-top: 2px; color: rgba(255,255,255,.47); font-size: 10px; }
+.hui-background-swatch { flex: none; width: 35px; height: 31px; border: 1px solid rgba(255,255,255,.13); border-radius: 7px; background: #090a0d; }
+.hui-background-swatch[data-mode='subtle'] { background: radial-gradient(circle at 25% 25%, #24262a, transparent 58%), radial-gradient(circle at 78% 70%, #1b1d20, transparent 55%), #090a0d; }
+.hui-background-swatch[data-mode='color'] { background: linear-gradient(140deg, #252044, #173841 50%, #47253f); }
+.hui-background-check { flex: none; width: 12px; height: 12px; border: 1px solid rgba(255,255,255,.33); border-radius: 50%; }
+.hui-background-choice[data-selected='true'] .hui-background-check { border: 3px solid #a6e5ed; background: #254d57; }
+
 .hui-transparency-range { accent-color: #8bdce8; cursor: pointer; }
 .hui-liquid-toggle { accent-color: #8bdce8; cursor: pointer; }
 

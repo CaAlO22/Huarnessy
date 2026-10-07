@@ -1,11 +1,13 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent } from 'react'
 import { createOpencodeClient } from '@opencode-ai/sdk/client'
 import { createOpencodeClient as createQuestionClient, type QuestionRequest } from '@opencode-ai/sdk/v2/client'
+import { GradFlow } from 'gradflow'
 import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
 import { sameWorkspace } from './workspace-path'
 import { ReplyPresentation, hasVisiblePart } from './ReplyPresentation'
 import { useLiquidGlassSurface } from './LiquidGlass'
+import { MottledBackground } from './MottledBackground'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
 
 interface ServerInfo {
@@ -80,6 +82,28 @@ const displayToolName = (name: string): string => name.charAt(0).toUpperCase() +
 
 const defaultPanelTransparency = 55
 const defaultChatFontSize = 15.5
+const colorFlow = {
+  color1: '#252044',
+  color2: '#173841',
+  color3: '#47253f',
+  type: 'wave' as const,
+  speed: 0.95,
+  scale: 0.9,
+  noise: 0.015
+}
+type BackgroundMode = 'solid' | 'subtle' | 'color'
+const backgroundModes: { value: BackgroundMode; label: string; description: string }[] = [
+  { value: 'solid', label: '深灰纯色', description: '安静、无动画' },
+  { value: 'subtle', label: '黑灰流动', description: '低对比度的柔和变化' },
+  { value: 'color', label: '彩色流动', description: '深色底上的渐变色彩' }
+]
+const readBackgroundMode = (): BackgroundMode => {
+  try {
+    const saved = localStorage.getItem('hui.backgroundMode')
+    if (saved === 'solid' || saved === 'subtle' || saved === 'color') return saved
+  } catch { /* Keep the default when local storage is unavailable. */ }
+  return 'color'
+}
 const readChatFontSize = (): number => {
   try {
     const saved = Number(localStorage.getItem('hui.chatFontSize'))
@@ -429,6 +453,7 @@ export default function App(): React.ReactElement {
   const [panelTransparency, setPanelTransparency] = useState(readPanelTransparency)
   const [chatFontSize, setChatFontSize] = useState(readChatFontSize)
   const [liquidGlass, setLiquidGlass] = useState(readLiquidGlass)
+  const [backgroundMode, setBackgroundMode] = useState(readBackgroundMode)
   const settingsRef = useRef<HTMLDivElement | null>(null)
 
   const [models, setModels] = useState<ModelOption[]>([])
@@ -463,6 +488,10 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     try { localStorage.setItem('hui.liquidGlass', String(liquidGlass)) } catch { /* Preview still works. */ }
   }, [liquidGlass])
+
+  useEffect(() => {
+    try { localStorage.setItem('hui.backgroundMode', backgroundMode) } catch { /* Preview still works. */ }
+  }, [backgroundMode])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -1200,7 +1229,10 @@ export default function App(): React.ReactElement {
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
-      <div className="app-bg" />
+      <div className="app-bg" data-mode={backgroundMode} aria-hidden="true">
+        {backgroundMode === 'color' ? <GradFlow config={colorFlow} /> : null}
+        {backgroundMode === 'subtle' ? <MottledBackground /> : null}
+      </div>
       {sessionMenu ? (
         <SessionContextMenu
           target={sessionMenu}
@@ -1239,23 +1271,36 @@ export default function App(): React.ReactElement {
               设置
             </button>
             {settingsOpen ? (
-              <div id="hui-appearance-settings" className="glass hui-settings-panel absolute right-0 top-9 w-64 rounded-xl p-4 shadow-2xl">
+              <div id="hui-appearance-settings" className="glass hui-settings-panel absolute right-0 top-9 w-72 rounded-xl p-4 shadow-2xl">
                 <div className="mb-3 text-sm font-semibold text-white/90">外观设置</div>
-                <label htmlFor="hui-panel-transparency" className="flex justify-between text-xs text-white/75">
-                  <span>面板透明度</span><span>{panelTransparency}%</span>
-                </label>
-                <input
-                  id="hui-panel-transparency"
-                  type="range"
-                  min="0"
-                  max="90"
-                  value={panelTransparency}
-                  onChange={(event) => setPanelTransparency(Number(event.target.value))}
-                  className="hui-transparency-range mt-3 w-full"
-                />
-                <div className="mt-2 flex items-center justify-between gap-3">
-                  <span className="text-[11px] text-white/50">只调整底色，文字保持清晰</span>
-                  <button type="button" onClick={() => setPanelTransparency(defaultPanelTransparency)} className="shrink-0 text-[11px] text-cyan-200/80 hover:text-cyan-100">重置</button>
+                <fieldset className="hui-background-choices">
+                  <legend className="mb-2 text-xs text-white/75">背景</legend>
+                  {backgroundModes.map(mode => (
+                    <label key={mode.value} className="hui-background-choice" data-selected={backgroundMode === mode.value}>
+                      <input type="radio" name="hui-background-mode" value={mode.value} checked={backgroundMode === mode.value} onChange={() => setBackgroundMode(mode.value)} />
+                      <span className="hui-background-swatch" data-mode={mode.value} aria-hidden="true" />
+                      <span className="min-w-0 flex-1"><strong>{mode.label}</strong><small>{mode.description}</small></span>
+                      <span className="hui-background-check" aria-hidden="true" />
+                    </label>
+                  ))}
+                </fieldset>
+                <div className="mt-4 border-t border-white/10 pt-3">
+                  <label htmlFor="hui-panel-transparency" className="flex justify-between text-xs text-white/75">
+                    <span>面板透明度</span><span>{panelTransparency}%</span>
+                  </label>
+                  <input
+                    id="hui-panel-transparency"
+                    type="range"
+                    min="0"
+                    max="90"
+                    value={panelTransparency}
+                    onChange={(event) => setPanelTransparency(Number(event.target.value))}
+                    className="hui-transparency-range mt-3 w-full"
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span className="text-[11px] text-white/50">只调整底色，文字保持清晰</span>
+                    <button type="button" onClick={() => setPanelTransparency(defaultPanelTransparency)} className="shrink-0 text-[11px] text-cyan-200/80 hover:text-cyan-100">重置</button>
+                  </div>
                 </div>
                 <div className="mt-4 border-t border-white/10 pt-3">
                   <label htmlFor="hui-chat-font-size" className="flex justify-between text-xs text-white/75">
