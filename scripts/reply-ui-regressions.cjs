@@ -187,6 +187,19 @@ module.exports = async (preview = false) => {
   check(!lensBubble.classList.contains('glass-liquid') && !userBubble?.classList.contains('glass-liquid') && panelFilter().includes('blur(22px)'), 'turning refraction off restores plain message surfaces without changing pane blur')
   liquidToggle.click()
   await waitFor(() => localStorage.getItem('hui.liquidGlass') === 'true')
+  // A step is animated open over ~460ms. Its lens bitmap must be regenerated
+  // while the box grows: a folded (small) map stretched to the widening panel
+  // magnifies the low-resolution rim into visible stair-stepping.
+  firstCall.querySelector('button').click()
+  await wait(550)
+  firstCall.querySelector('button').click()
+  await wait(120)
+  const liveWidth = firstCall.clientWidth
+  const liveHeight = firstCall.clientHeight
+  const liveMapWidth = Number(firstCall.querySelector('feImage')?.getAttribute('width'))
+  const liveMapHeight = Number(firstCall.querySelector('feImage')?.getAttribute('height'))
+  check(liveMapWidth / liveWidth > .6 && liveMapHeight / liveHeight > .6, `the step lens regenerates while the panel animates open instead of stretching a folded map (${liveWidth}x${liveHeight} vs ${liveMapWidth}x${liveMapHeight})`)
+  await wait(500)
   for (const messageID of ['call-user', 'call-one', 'call-two', 'call-three']) emit('message.removed', { sessionID, messageID })
   Array.from(document.querySelectorAll('button')).find(button => button.title === 'Streaming benchmark').click()
   await wait(100)
