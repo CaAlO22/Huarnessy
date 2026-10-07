@@ -18,14 +18,14 @@ const baseDir =
   process.env.LOCALAPPDATA ||
   process.env.XDG_DATA_HOME ||
   join(process.env.HOME || process.env.USERPROFILE || repoRoot, '.local', 'share')
-const appDir = join(baseDir, 'OpencodeHUI', 'standalone')
+const appDir = join(baseDir, 'Huarnessy', 'standalone')
 
 rmSync(appDir, { recursive: true, force: true })
 mkdirSync(appDir, { recursive: true })
 cpSync(join(repoRoot, 'out'), join(appDir, 'out'), { recursive: true })
 writeFileSync(
   join(appDir, 'package.json'),
-  JSON.stringify({ name: 'opencodehui', version: '0.0.1', main: 'out/main/index.js' }, null, 2)
+  JSON.stringify({ name: 'huarnessy', version: '0.0.1', main: 'out/main/index.js' }, null, 2)
 )
 
 const electronPath = require('electron')

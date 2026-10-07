@@ -6,7 +6,7 @@
 
 ## 1. 项目是什么
 
-**OpencodeHUI** 是一个用 **Electron + React 从零编写的 opencode 图形客户端**。
+**Huarnessy** 是一个用 **Electron + React 从零编写的 opencode 图形客户端**。
 
 - 不修改开放源代码内核，而是把官方 `opencode` 作为**本地 HTTP/SSE 服务**拉起（`opencode serve`），前端通过官方 SDK + 原生 `EventSource` 与之交互。
 - 定位是 **WebUI 外壳**：内核负责会话/模型/工具执行，外壳负责界面与流式展示。
@@ -44,7 +44,7 @@
 ## 3. 目录结构
 
 ```
-OpencodeHUI/
+Huarnessy/
 ├─ electron.vite.config.ts     # electron-vite 配置（@ 别名、React、Tailwind 插件）
 ├─ tsconfig.json               # TS 配置（ES2022 / Bundler / react-jsx / paths:@）
 ├─ package.json                # 脚本：dev / build / preview / typecheck / test:stream / test:workspace
@@ -102,7 +102,7 @@ npm run test:stream  # 假内核驱动的 Electron 流式性能与功能回归
 npm run test:workspace # 工作空间设置与目录隔离的单元验证
 ```
 
-- `npm run dev` 会监听 `src/`：改渲染层触发 HMR 重载、改主进程直接重启 Electron。若正用该窗口与本项目对话，源码改动会打断当前窗口。需要一边改源码一边保持对话窗口存活时，用 `npm run app`（或 `npm run app:build`）：`scripts/run-standalone.mjs` 把 `out/` 拷贝到仓库外的稳定目录（Windows 为 `%LOCALAPPDATA%\OpencodeHUI\standalone`）再启动，之后 `npm run build` 覆盖仓库内 `out/` 不会影响运行中的实例。该快照仍是独立进程，带自己的 `opencode serve` 内核，与 VSCode 内的 opencode 实例互不影响。要看到新的源码改动，需重新执行 `npm run app:build` 并接受新窗口替换旧窗口。
+- `npm run dev` 会监听 `src/`：改渲染层触发 HMR 重载、改主进程直接重启 Electron。若正用该窗口与本项目对话，源码改动会打断当前窗口。需要一边改源码一边保持对话窗口存活时，用 `npm run app`（或 `npm run app:build`）：`scripts/run-standalone.mjs` 把 `out/` 拷贝到仓库外的稳定目录（Windows 为 `%LOCALAPPDATA%\Huarnessy\standalone`）再启动，之后 `npm run build` 覆盖仓库内 `out/` 不会影响运行中的实例。该快照仍是独立进程，带自己的 `opencode serve` 内核，与 VSCode 内的 opencode 实例互不影响。要看到新的源码改动，需重新执行 `npm run app:build` 并接受新窗口替换旧窗口。
 
 - **VSCode 调试**：F5 → `Debug All`（Main 用 node 调试、Renderer 用 chrome 9222 attach）。
   `Debug Main Process` 已注入 `REMOTE_DEBUGGING_PORT=9222`；`src/main/index.ts` 仅在该环境变量存在时开启远程调试端口（便于 CDP 自动化排查）。

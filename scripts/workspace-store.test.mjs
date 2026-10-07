@@ -12,12 +12,12 @@ async function importTypeScript(file) {
 const { loadWorkspace, saveWorkspace } = await importTypeScript('../src/main/workspace.ts')
 const { sameWorkspace } = await importTypeScript('../src/renderer/src/workspace-path.ts')
 const tempBase = resolve(tmpdir())
-const fixture = await mkdtemp(join(tempBase, 'opencodehui-workspace-'))
+const fixture = await mkdtemp(join(tempBase, 'huarnessy-workspace-'))
 const a = join(fixture, '项目 A'), b = join(fixture, '项目 B'), userData = join(fixture, 'settings')
 await Promise.all([mkdir(a), mkdir(b)])
 after(async () => {
   assert.equal(dirname(fixture), tempBase)
-  assert.ok(basename(fixture).startsWith('opencodehui-workspace-'))
+  assert.ok(basename(fixture).startsWith('huarnessy-workspace-'))
   await rm(fixture, { recursive: true, force: true })
 })
 

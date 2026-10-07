@@ -1776,7 +1776,7 @@ export default function App(): React.ReactElement {
 
       <header className="drag relative z-30 flex h-11 shrink-0 items-center justify-between px-3">
         <div className="flex items-center gap-2 text-xs text-white/70">
-          <span className="font-semibold tracking-wide text-white/90">OpencodeHUI</span>
+          <span className="font-semibold tracking-wide text-white/90">Huarnessy</span>
           <span className={`h-2 w-2 rounded-full ${statusColor}`} />
           <span>
             {server?.status === 'ready'
