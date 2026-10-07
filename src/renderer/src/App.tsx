@@ -318,6 +318,82 @@ const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleCha
   )
 })
 
+const stepRangeSize = 10
+const recentCallCount = 3
+
+function StepRange({ groups, start, liquidGlass }: {
+  groups: MessageEntry[]
+  start: number
+  liquidGlass: boolean
+}): React.ReactElement {
+  const [expanded, setExpanded] = useState(false)
+  const [mounted, setMounted] = useState(false)
+  const panelId = useId()
+  useEffect(() => {
+    if (expanded || !mounted) return
+    const timer = window.setTimeout(() => setMounted(false), 500)
+    return () => window.clearTimeout(timer)
+  }, [expanded, mounted])
+
+  const tools = new Map<string, { name: string; count: number; color: string }>()
+  for (const message of groups) for (const part of message.parts) {
+    if (part.type !== 'tool') continue
+    const name = String(part.tool ?? 'Tool')
+    const key = name.toLowerCase()
+    const existing = tools.get(key)
+    if (existing) existing.count++
+    else tools.set(key, { name: displayToolName(name), count: 1, color: toolColors[key] ?? 'default' })
+  }
+  const topTools = [...tools.values()].sort((a, b) => b.count - a.count).slice(0, 3)
+  const remainingKinds = Math.max(0, tools.size - topTools.length)
+
+  return (
+    <section className="hui-step-range" data-start={start + 1} data-end={start + groups.length} data-expanded={expanded}>
+      <button className="hui-step-range-header" type="button" aria-expanded={expanded} aria-controls={panelId}
+        onClick={() => { if (!expanded) setMounted(true); setExpanded(value => !value) }}>
+        <span className="hui-call-chevron" aria-hidden="true" />
+        <span className="hui-call-heading">步骤 {start + 1}–{start + groups.length}</span>
+        <span className="hui-call-meta">{groups.length} 步{topTools.length ? ' · ' : ''}{topTools.map((tool, index) => (
+          <span key={tool.name} className="hui-step-tool" data-tool-color={tool.color}>{index ? '，' : ''}{tool.count}次 {tool.name}</span>
+        ))}{remainingKinds ? `，另 ${remainingKinds} 种` : ''}</span>
+        <span className="hui-call-state">{expanded ? '收起' : '展开'}</span>
+      </button>
+      <div className="hui-step-range-reveal" aria-hidden={!expanded} inert={!expanded}>
+        <div id={panelId} className="hui-step-range-content">
+          {mounted ? groups.map((msg, index) => (
+            <CallBlock key={msg.info?.id ?? start + index} msg={msg} order={start + index + 1} foldedByNext liquidGlass={liquidGlass} />
+          )) : null}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function StepList({ groups, visibleChars, liquidGlass, canCompact }: {
+  groups: MessageEntry[]
+  visibleChars?: number
+  liquidGlass: boolean
+  canCompact: boolean
+}): React.ReactElement {
+  // Full ten-step ranges stay anchored to the start of this reply. Keep the
+  // newest calls visible and postpone new compaction while history is read.
+  const eligible = Math.floor(Math.max(0, groups.length - recentCallCount) / stepRangeSize) * stepRangeSize
+  const [compacted, setCompacted] = useState(eligible)
+  useLayoutEffect(() => {
+    if (eligible < compacted || (canCompact && eligible > compacted)) setCompacted(eligible)
+  }, [eligible, compacted, canCompact])
+
+  const items: React.ReactNode[] = []
+  for (let start = 0; start < compacted; start += stepRangeSize) {
+    items.push(<StepRange key={`range-${start}`} groups={groups.slice(start, start + stepRangeSize)} start={start} liquidGlass={liquidGlass} />)
+  }
+  for (let index = compacted; index < groups.length; index++) {
+    const msg = groups[index]
+    items.push(<CallBlock key={msg.info?.id ?? index} msg={msg} order={index + 1} foldedByNext={index < groups.length - 1} visibleChars={index === groups.length - 1 ? visibleChars : undefined} liquidGlass={liquidGlass} />)
+  }
+  return <>{items}</>
+}
+
 function GlassSelect({ value, onChange, options, title, disabled, empty }: {
   value: string
   onChange: (value: string) => void
@@ -460,6 +536,7 @@ export default function App(): React.ReactElement {
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null)
   const [agents, setAgents] = useState<any[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
+  const [followingReply, setFollowingReply] = useState(true)
 
   const clientRef = useRef<any>(null)
   const workspaceRef = useRef<string | null>(null)
@@ -760,6 +837,7 @@ export default function App(): React.ReactElement {
       setBusy(false)
       setLastError(null)
       stickBottom.current = true
+      setFollowingReply(true)
     }
   }, [clearEvents])
 
@@ -829,6 +907,7 @@ export default function App(): React.ReactElement {
     setInput('')
     setLastError(null)
     stickBottom.current = true
+    setFollowingReply(true)
   }, [clearEvents, closeSessionMenu])
 
   const chooseWorkspace = useCallback(async () => {
@@ -1016,7 +1095,10 @@ export default function App(): React.ReactElement {
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
     // Height changes/programmatic scrolling also emit scroll events. They must
     // not disable following the reply before the ResizeObserver can catch up.
-    if (atBottom || userScrolling.current) stickBottom.current = atBottom
+    if (atBottom || userScrolling.current) {
+      stickBottom.current = atBottom
+      setFollowingReply(atBottom)
+    }
     userScrolling.current = false
   }
 
@@ -1059,6 +1141,7 @@ export default function App(): React.ReactElement {
     setBusy(true)
     setLastError(null)
     stickBottom.current = true
+    setFollowingReply(true)
 
     try {
       let id = activeIdRef.current
@@ -1205,9 +1288,7 @@ export default function App(): React.ReactElement {
       count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
     conversation.push(
       <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength} liquidGlass={liquidGlass}>
-        {(visibleChars) => replies.map((message, index) => (
-          <CallBlock key={message.info?.id ?? index} msg={message} order={index + 1} foldedByNext={index < replies.length - 1} visibleChars={index === replies.length - 1 ? visibleChars : undefined} liquidGlass={liquidGlass} />
-        ))}
+        {(visibleChars) => <StepList groups={replies} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} />}
       </ReplyPresentation>
     )
   }
@@ -1424,7 +1505,7 @@ export default function App(): React.ReactElement {
             onScroll={onScroll}
             onWheel={(event) => {
               userScrolling.current = true
-              if (event.deltaY < 0) stickBottom.current = false
+              if (event.deltaY < 0) { stickBottom.current = false; setFollowingReply(false) }
             }}
             onPointerDown={(event) => {
               if (event.clientX >= event.currentTarget.getBoundingClientRect().right - 12) userScrolling.current = true

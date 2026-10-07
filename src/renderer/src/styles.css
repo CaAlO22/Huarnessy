@@ -467,6 +467,71 @@ body {
   transition-delay: 0ms;
 }
 
+.hui-step-range {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.hui-step-range-header {
+  display: flex;
+  max-width: 100%;
+  min-height: 38px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+  padding: 8px 12px;
+  border: 1px solid rgba(169, 204, 223, .2);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(105, 149, 179, calc(.14 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(.045 * var(--hui-panel-strength, .45))));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09), 0 8px 24px rgba(0, 0, 0, .14);
+  color: rgba(235, 243, 252, .9);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms ease-out;
+}
+.hui-step-range-header:hover { border-color: rgba(185, 220, 245, .34); }
+.hui-step-range-header:focus-visible { outline: 2px solid #9bdbe9; outline-offset: 2px; }
+.hui-step-range-reveal {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 500ms cubic-bezier(.35, .65, .2, 1);
+}
+.hui-step-range[data-expanded='false'] .hui-step-range-reveal { grid-template-rows: 0fr; }
+.hui-step-range-content {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  overflow: hidden;
+  opacity: 1;
+  padding: 12px 0 0 14px;
+  transform: translateY(0);
+  transition: opacity 320ms ease-out, transform 460ms cubic-bezier(.35, .65, .2, 1);
+}
+.hui-step-range[data-expanded='false'] .hui-step-range-content {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.hui-step-range-content::before {
+  position: absolute;
+  top: 10px;
+  bottom: 4px;
+  left: 5px;
+  width: 1px;
+  background: rgba(173, 214, 234, .2);
+  content: '';
+}
+.hui-step-range-content { position: relative; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hui-step-range-reveal, .hui-step-range-content { transition-duration: 0ms; }
+}
+
 .hui-message-parts > .hui-tool-call + :not(.hui-tool-call),
 .hui-message-parts > :not(.hui-tool-call) + .hui-tool-call {
   margin-top: 12px;
