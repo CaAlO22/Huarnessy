@@ -46,6 +46,13 @@ module.exports = async (keepPreview = false) => {
   const openingOffset = movingItem.getBoundingClientRect().top - header.getBoundingClientRect().bottom
   const openingTransform = getComputedStyle(movingItem).transform
   check(openingHeight > foldedHeight && first.querySelectorAll('.hui-call-block').length === 10, `range reveals its original steps progressively (${foldedHeight}, ${openingHeight}, ${first.querySelectorAll('.hui-call-block').length})`)
+  check(Number(getComputedStyle(movingItem).opacity) >= .85, 'cards remain legible during the slide instead of waiting for a long fade-in')
+  const cards = first.querySelectorAll('.hui-step-range-item')
+  const thirdTravel = -Number.parseFloat(cards[2].style.getPropertyValue('--range-start'))
+  const fourthTravel = -Number.parseFloat(cards[3].style.getPropertyValue('--range-start'))
+  const seam = cards[3].getBoundingClientRect().top - cards[2].getBoundingClientRect().bottom
+  check(Math.abs(thirdTravel - fourthTravel) < 2 && Math.abs(fourthTravel - (cards[3].offsetTop - cards[2].offsetTop)) < 2 && seam < 30,
+    `the third and fourth cards share one continuous cascade (${thirdTravel}px, ${fourthTravel}px; gap ${seam}px)`)
   check(Math.abs(header.getBoundingClientRect().top - foldedTop) < 25, 'opening an older range keeps its summary in view')
   await wait(750)
   const expandedWidth = header.getBoundingClientRect().width
@@ -75,6 +82,7 @@ module.exports = async (keepPreview = false) => {
   header.click()
   await wait(250)
   check(secondCard.getBoundingClientRect().top - header.getBoundingClientRect().bottom < beforeClosing, 'closing cards move back toward the summary before being removed')
+  check(Number(getComputedStyle(secondCard).opacity) >= .85, 'cards stay visible as they return to the stack')
   await wait(600)
   check(header.getAttribute('aria-expanded') === 'false' && first.querySelectorAll('.hui-call-block').length === 0, 'closing a range releases hidden step DOM after the animation')
   if (!keepPreview) {

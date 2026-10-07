@@ -588,14 +588,14 @@ body {
   opacity: 1;
   transform: translateY(0);
   transform-origin: left top;
-  transition: transform 560ms cubic-bezier(.22, 1, .36, 1), opacity 150ms ease-out;
-  transition-delay: var(--range-move-delay), var(--range-appear-delay);
+  transition: transform 560ms cubic-bezier(.22, 1, .36, 1), opacity 110ms ease-out;
+  transition-delay: var(--range-move-delay), 0ms;
 }
 .hui-step-range-item:first-child { margin-top: 10px; }
 .hui-step-range[data-expanded='false'] .hui-step-range-item {
-  opacity: 0;
-  transform: translateY(var(--range-start, 0px)) scale(.97);
-  transition-delay: calc((9 - var(--range-index)) * 16ms), calc((9 - var(--range-index)) * 16ms);
+  opacity: .86;
+  transform: translateY(var(--range-start, 0px));
+  transition-delay: calc((9 - var(--range-index)) * 16ms), 0ms;
 }
 .hui-step-range[data-preparing='true'] .hui-step-range-item { transition: none; }
 

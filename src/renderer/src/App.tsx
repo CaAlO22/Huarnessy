@@ -434,14 +434,19 @@ function StepRange({ groups, start, liquidGlass, onExpand }: {
   const measureStack = (): void => {
     const content = contentRef.current
     if (!content) return
-    for (const [index, item] of Array.from(content.children as HTMLCollectionOf<HTMLElement>).entries()) {
-      item.style.setProperty('--range-start', `${index < 3 ? -Math.max(0, item.offsetTop - 3) : -14}px`)
+    const items = Array.from(content.children as HTMLCollectionOf<HTMLElement>)
+    const tops = items.map(item => item.offsetTop)
+    for (const [index, item] of items.entries()) {
+      // Every card leaves the card immediately above it. A different origin
+      // after the third card creates a visible break in the cascade.
+      const travel = index === 0 ? Math.max(0, tops[0] - 3) : tops[index] - tops[index - 1]
+      item.style.setProperty('--range-start', `${-travel}px`)
     }
   }
   useLayoutEffect(() => {
     if (!mounted) return
-    // Each card starts beneath the summary, then moves to its own measured
-    // position. This also works when a child step has been expanded by hand.
+    // Measure the distance between neighbors so expanded child steps still
+    // return to the card immediately above them when the range closes.
     measureStack()
     let secondFrame = 0
     const firstFrame = window.requestAnimationFrame(() => {
@@ -497,8 +502,7 @@ function StepRange({ groups, start, liquidGlass, onExpand }: {
           {mounted ? groups.map((messages, index) => (
             <div className="hui-step-range-item" style={{
               '--range-index': index,
-              '--range-move-delay': `${index < 3 ? index * 35 : 0}ms`,
-              '--range-appear-delay': `${index < 3 ? [45, 175, 275][index] : 285 + (index - 3) * 25}ms`
+              '--range-move-delay': `${index * 18}ms`
             } as CSSProperties} key={messages[0].info?.id ?? start + index}>
               <CallBlock messages={messages} order={start + index + 1} foldedByNext liquidGlass={liquidGlass} />
             </div>
