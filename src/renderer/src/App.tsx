@@ -1822,17 +1822,15 @@ export default function App(): React.ReactElement {
       <header className="drag relative z-30 flex h-11 shrink-0 items-center justify-between px-3">
         <div className="flex items-center gap-2 text-xs text-white/70">
           <span className="font-semibold tracking-wide text-white/90">Huarnessy</span>
-          <span className={`h-2 w-2 rounded-full ${statusColor}`} />
-          <span>
-            {server?.status === 'ready'
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${statusColor}`}
+            title={server?.status === 'ready'
               ? `已连接 :${server.port}${server.version ? ` · v${server.version}` : ''}`
               : server?.status === 'error'
                 ? '启动失败'
                 : '正在启动 opencode…'}
-          </span>
-        </div>
-        <div className="no-drag flex items-center gap-1">
-          <div ref={settingsRef} className="relative">
+          />
+          <div ref={settingsRef} className="relative no-drag">
             <button
               type="button"
               aria-label="外观设置"
@@ -1848,7 +1846,7 @@ export default function App(): React.ReactElement {
               设置
             </button>
             {settingsOpen ? (
-              <div id="hui-appearance-settings" className="glass hui-settings-panel absolute right-0 top-9 w-72 rounded-xl p-4 shadow-2xl">
+              <div id="hui-appearance-settings" className="glass hui-settings-panel absolute left-0 top-9 w-72 rounded-xl p-4 shadow-2xl">
                 <div className="mb-3 text-sm font-semibold text-white/90">设置</div>
                 <div className="hui-unlimited-permissions mb-4 rounded-lg border p-3">
                   <label className="flex cursor-pointer items-center justify-between gap-3 text-xs font-semibold">
@@ -1911,8 +1909,10 @@ export default function App(): React.ReactElement {
               </div>
             ) : null}
           </div>
+        </div>
+        <div className="no-drag flex items-center gap-1">
           <div
-            className="hui-context-meter no-drag ml-1"
+            className="hui-context-meter no-drag"
             role="status"
             data-level={contextLevel}
             aria-label={`上下文占用 ${contextPercentLabel}`}
