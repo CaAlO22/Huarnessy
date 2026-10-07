@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent } from 'react'
 import { createOpencodeClient } from '@opencode-ai/sdk/client'
+import { createOpencodeClient as createQuestionClient, type QuestionRequest } from '@opencode-ai/sdk/v2/client'
 import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
 import { sameWorkspace } from './workspace-path'
@@ -27,6 +28,16 @@ interface SelectedModel {
   providerID: string
   modelID: string
 }
+
+interface Attachment {
+  id: string
+  name: string
+  mime: string
+  url: string
+  size: number
+}
+
+interface MenuOption { value: string; label: string; group?: string }
 
 interface RevertedTurn {
   sessionId: string
@@ -122,6 +133,13 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
     const toolName = String(part.tool ?? 'Tool')
     const toolColor = toolColors[toolName.toLowerCase()] ?? 'default'
     const displayName = displayToolName(toolName)
+    if (toolName.toLowerCase() === 'question') return (
+      <div className="hui-tool-call hui-question-tool" data-tool-color="default">
+        <span className="hui-tool-name">Question</span>
+        <span className="hui-tool-status">{state.status === 'completed' ? '已回答' : state.status === 'error' ? '已结束' : '等待回答'}</span>
+        {state.title ? <span className="hui-tool-title">{String(state.title)}</span> : null}
+      </div>
+    )
     return (
       <details className="hui-tool-call" data-tool-color={toolColor}>
         <summary className="hui-tool-summary">
@@ -276,29 +294,106 @@ const CallBlock = memo(function CallBlock({ msg, order, foldedByNext, visibleCha
   )
 })
 
-function Select({
-  value,
-  onChange,
-  children,
-  title,
-  disabled
-}: {
+function GlassSelect({ value, onChange, options, title, disabled, empty }: {
   value: string
-  onChange: (v: string) => void
-  children: React.ReactNode
-  title?: string
+  onChange: (value: string) => void
+  options: MenuOption[]
+  title: string
   disabled?: boolean
+  empty: string
 }): React.ReactElement {
+  const [open, setOpen] = useState(false)
+  const [focusIndex, setFocusIndex] = useState(0)
+  const root = useRef<HTMLDivElement>(null)
+  const listId = useId()
+  const selectedIndex = options.findIndex(option => option.value === value)
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: PointerEvent): void => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    return () => document.removeEventListener('pointerdown', closeOutside)
+  }, [open])
+  useEffect(() => { if (disabled) setOpen(false) }, [disabled])
   return (
-    <select
-      value={value}
-      title={title}
-      disabled={disabled}
-      onChange={(e) => onChange(e.target.value)}
-      className="no-drag max-w-[220px] cursor-pointer truncate rounded-lg border border-white/12 bg-white/8 px-2 py-1 text-[11.5px] text-white/80 outline-none transition hover:bg-white/14 focus:border-white/25 disabled:opacity-40 [&>optgroup]:bg-slate-900 [&>optgroup]:text-white/50 [&>option]:bg-slate-900 [&>option]:text-white"
-    >
-      {children}
-    </select>
+    <div ref={root} className="hui-picker no-drag" data-open={open}>
+      <button type="button" title={title} disabled={disabled} aria-label={title} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}
+        onClick={() => { setFocusIndex(Math.max(0, selectedIndex)); setOpen(previous => !previous) }}
+        onKeyDown={event => {
+          if (event.key === 'Escape') { setOpen(false); return }
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault()
+            if (!open) { setFocusIndex(Math.max(0, selectedIndex)); setOpen(true) }
+            else setFocusIndex(index => (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length)
+          }
+          if (event.key === 'Enter' && open && options[focusIndex]) { onChange(options[focusIndex].value); setOpen(false) }
+        }}
+        className="hui-picker-trigger">
+        <span className="truncate">{options[selectedIndex]?.label ?? empty}</span><span className="hui-picker-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div id={listId} role="listbox" aria-label={title} className="hui-picker-panel glass" style={plainGlassFilter}>
+        <div className="hui-picker-scroll">
+          {options.map((option, index) => (
+            <div key={option.value}>
+              {option.group && (index === 0 || options[index - 1].group !== option.group) ? <div className="hui-picker-group">{option.group}</div> : null}
+              <button type="button" role="option" aria-selected={value === option.value} tabIndex={-1}
+                className="hui-picker-option" data-focused={focusIndex === index}
+                onMouseEnter={() => setFocusIndex(index)}
+                onClick={() => { onChange(option.value); setOpen(false) }}>
+                <span className="truncate">{option.label}</span>{value === option.value ? <span aria-hidden="true">✓</span> : null}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function QuestionDialog({ request, busy, onReply, onReject }: {
+  request: QuestionRequest
+  busy: boolean
+  onReply: (answers: string[][]) => void
+  onReject: () => void
+}): React.ReactElement {
+  const [answers, setAnswers] = useState<string[][]>(() => request.questions.map(() => []))
+  const [custom, setCustom] = useState<string[]>(() => request.questions.map(() => ''))
+  const choose = (questionIndex: number, label: string, multiple: boolean): void => {
+    setAnswers(previous => previous.map((answer, index) => index !== questionIndex ? answer : multiple
+      ? answer.includes(label) ? answer.filter(item => item !== label) : [...answer, label]
+      : [label]))
+  }
+  const finalAnswers = request.questions.map((question, index) => {
+    const typed = custom[index]?.trim()
+    return typed && question.multiple ? [...answers[index], typed] : typed ? [typed] : answers[index]
+  })
+  return (
+    <div className="hui-question-backdrop" role="presentation">
+      <section className="hui-question-dialog glass" style={plainGlassFilter} role="dialog" aria-modal="true" aria-label="需要回答的问题">
+        <div className="hui-question-heading"><span>需要你的回答</span><span className="hui-question-count">{request.questions.length} 个问题</span></div>
+        <div className="hui-question-body">
+          {request.questions.map((question, index) => (
+            <fieldset key={index} className="hui-question-field">
+              <legend><span className="hui-question-header">{question.header}</span>{question.question}</legend>
+              <div className="hui-question-options">
+                {question.options.map(option => {
+                  const selected = answers[index].includes(option.label)
+                  return <button key={option.label} type="button" aria-pressed={selected} onClick={() => choose(index, option.label, !!question.multiple)} className="hui-question-option">
+                    <span className="hui-question-marker">{selected ? '✓' : ''}</span><span><strong>{option.label}</strong><small>{option.description}</small></span>
+                  </button>
+                })}
+              </div>
+              {question.custom !== false ? <input value={custom[index]} onChange={event => setCustom(previous => previous.map((text, i) => i === index ? event.target.value : text))} placeholder="输入其他回答…" className="hui-question-custom" /> : null}
+            </fieldset>
+          ))}
+        </div>
+        <div className="hui-question-actions">
+          <button type="button" disabled={busy} onClick={onReject} className="hui-question-cancel">拒绝回答</button>
+          <button type="button" disabled={busy || finalAnswers.some(answer => answer.length === 0)} onClick={() => onReply(finalAnswers)} className="hui-question-submit">{busy ? '提交中…' : '提交回答'}</button>
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -310,6 +405,15 @@ export default function App(): React.ReactElement {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<MessageEntry[]>([])
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [draggingFiles, setDraggingFiles] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const attachmentEpoch = useRef(0)
+  const [questions, setQuestions] = useState<QuestionRequest[]>([])
+  const [answeringQuestion, setAnsweringQuestion] = useState(false)
+  const questionClientRef = useRef<ReturnType<typeof createQuestionClient> | null>(null)
+  const questionVersion = useRef(0)
   const [busy, setBusy] = useState(false)
   const beforeRequestUserId = useRef<string | null>(null)
   const pendingTurnKey = useRef<string | null>(null)
@@ -386,6 +490,67 @@ export default function App(): React.ReactElement {
     }
     return Array.from(map.entries())
   }, [models])
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 192)}px`
+    textarea.style.overflowY = textarea.scrollHeight > 192 ? 'auto' : 'hidden'
+  }, [input])
+
+  const addFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return
+    const epoch = attachmentEpoch.current
+    const accepted = files.filter(file => {
+      if (file.size > 25 * 1024 * 1024) {
+        setLastError(`文件过大：${file.name}（上限 25 MB）`)
+        return false
+      }
+      return true
+    })
+    try {
+      const next = await Promise.all(accepted.map(file => new Promise<Attachment>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve({ id: crypto.randomUUID(), name: file.name, mime: file.type || 'application/octet-stream', url: String(reader.result), size: file.size })
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
+      })))
+      if (epoch === attachmentEpoch.current) setAttachments(previous => [...previous, ...next])
+    } catch (error) {
+      if (epoch === attachmentEpoch.current) setLastError(`读取附件失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }, [])
+
+  const loadQuestions = useCallback(async (sessionId: string) => {
+    const c = questionClientRef.current
+    const directory = workspaceRef.current
+    if (!c || !directory) return
+    const version = ++questionVersion.current
+    try {
+      const result = await c.question.list({ directory }, { throwOnError: true })
+      if (c !== questionClientRef.current || sessionId !== activeIdRef.current || version !== questionVersion.current) return
+      setQuestions((unwrap(result) ?? []).filter((request: QuestionRequest) => request.sessionID === sessionId))
+    } catch (error) {
+      if (c === questionClientRef.current && sessionId === activeIdRef.current) console.error('load questions failed', error)
+    }
+  }, [])
+
+  const resolveQuestion = async (request: QuestionRequest, answers?: string[][]): Promise<void> => {
+    const c = questionClientRef.current
+    const directory = workspaceRef.current
+    if (!c || !directory || request.sessionID !== activeIdRef.current || answeringQuestion) return
+    setAnsweringQuestion(true)
+    try {
+      if (answers) await c.question.reply({ requestID: request.id, directory, answers }, { throwOnError: true })
+      else await c.question.reject({ requestID: request.id, directory }, { throwOnError: true })
+      if (c === questionClientRef.current && request.sessionID === activeIdRef.current) setQuestions(previous => previous.filter(item => item.id !== request.id))
+    } catch (error) {
+      if (c === questionClientRef.current && request.sessionID === activeIdRef.current) setLastError(`回答问题失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (c === questionClientRef.current) setAnsweringQuestion(false)
+    }
+  }
 
   const loadSessions = useCallback(async () => {
     const c = clientRef.current
@@ -523,6 +688,9 @@ export default function App(): React.ReactElement {
     setActiveId(id)
     activeIdRef.current = id
     setMessages([])
+    setQuestions([])
+    setAnsweringQuestion(false)
+    void loadQuestions(id)
     setReverted(null)
     try {
       const [r, sessionResult] = await Promise.all([
@@ -542,7 +710,7 @@ export default function App(): React.ReactElement {
     } catch (e) {
       console.error('open session failed', e)
     }
-  }, [clearEvents, flushEvents, closeSessionMenu])
+  }, [clearEvents, flushEvents, closeSessionMenu, loadQuestions])
 
   const forgetSession = useCallback((id: string) => {
     deletedSessions.current.add(id)
@@ -555,6 +723,8 @@ export default function App(): React.ReactElement {
       activeIdRef.current = null
       setActiveId(null)
       setMessages([])
+      setQuestions([])
+      questionVersion.current++
       setReverted(null)
       revertOperation.current = null
       setRevertingId(null)
@@ -597,6 +767,8 @@ export default function App(): React.ReactElement {
     // Invalidate the old client immediately, before React reconnects the next
     // workspace. Late requests and already-queued SSE handlers become inert.
     clientRef.current = null
+    questionClientRef.current = null
+    questionVersion.current++
     clientBase.current = null
     esRef.current?.close()
     esRef.current = null
@@ -612,6 +784,11 @@ export default function App(): React.ReactElement {
     setActiveId(null)
     setSessions([])
     setMessages([])
+    setQuestions([])
+    setAnsweringQuestion(false)
+    attachmentEpoch.current++
+    setAttachments([])
+    setDraggingFiles(false)
     setReverted(null)
     setRevertingId(null)
     revertOperation.current = null
@@ -673,7 +850,9 @@ export default function App(): React.ReactElement {
     clientBase.current = context
 
     const client = createOpencodeClient({ baseUrl: url, directory: workspace })
+    const questionClient = createQuestionClient({ baseUrl: url, directory: workspace })
     clientRef.current = client
+    questionClientRef.current = questionClient
     loadSessions()
     loadConfig()
 
@@ -697,6 +876,19 @@ export default function App(): React.ReactElement {
       const active = activeIdRef.current
 
       switch (t) {
+        case 'question.asked':
+          if (active && p.sessionID === active && p.id) {
+            questionVersion.current++
+            setQuestions(previous => previous.some(request => request.id === p.id) ? previous : [...previous, p as QuestionRequest])
+          }
+          break
+        case 'question.replied':
+        case 'question.rejected':
+          if (active && p.sessionID === active) {
+            questionVersion.current++
+            setQuestions(previous => previous.filter(request => request.id !== p.requestID))
+          }
+          break
         case 'message.updated': {
           if (!active || (p.info?.sessionID && p.info.sessionID !== active)) return
           enqueueEvent('message.updated', p)
@@ -756,6 +948,7 @@ export default function App(): React.ReactElement {
       if (esRef.current === es) esRef.current = null
       clientBase.current = null
       if (clientRef.current === client) clientRef.current = null
+      if (questionClientRef.current === questionClient) questionClientRef.current = null
     }
   }, [
     server?.status,
@@ -823,9 +1016,12 @@ export default function App(): React.ReactElement {
   const send = async (): Promise<void> => {
     const text = input.trim()
     const c = clientRef.current
-    if (!text || !c || !server?.url || busy) return
+    if ((!text && attachments.length === 0) || !c || !server?.url || busy) return
 
-    const body: any = { parts: [{ type: 'text', text }] }
+    const body: any = { parts: [
+      ...(text ? [{ type: 'text', text }] : []),
+      ...attachments.map(file => ({ type: 'file', mime: file.mime, filename: file.name, url: file.url }))
+    ] }
     if (selectedModel) body.model = selectedModel
     if (selectedAgent) body.agent = selectedAgent
 
@@ -838,7 +1034,7 @@ export default function App(): React.ReactElement {
     try {
       let id = activeIdRef.current
       if (!id) {
-        const r = await c.session.create({ body: { title: text.slice(0, 48) }, throwOnError: true })
+        const r = await c.session.create({ body: { title: (text || attachments[0].name).slice(0, 48) }, throwOnError: true })
         if (c !== clientRef.current) return
         const s = unwrap(r)
         id = s?.id ?? null
@@ -852,9 +1048,10 @@ export default function App(): React.ReactElement {
       }
       if (c !== clientRef.current) return
       if (!id) { setBusy(false); return }
-      setInput('')
       await c.session.promptAsync({ path: { id }, body, throwOnError: true })
       if (c === clientRef.current && id === activeIdRef.current) {
+        setInput(previous => previous === input ? '' : previous)
+        setAttachments(previous => previous.filter(file => !attachments.some(sent => sent.id === file.id)))
         setReverted(previous => previous?.sessionId === id ? { ...previous, restoreAvailable: false } : previous)
       }
     } catch (e) {
@@ -1221,12 +1418,28 @@ export default function App(): React.ReactElement {
                 </button>
               </div>
             ) : null}
-            <div className="glass-soft rounded-2xl p-2">
+            <div className="hui-composer glass-soft rounded-2xl p-2" data-dragging={draggingFiles}
+              onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDraggingFiles(true) } }}
+              onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }}
+              onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDraggingFiles(false) }}
+              onDrop={(event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setDraggingFiles(false); void addFiles(Array.from(event.dataTransfer.files)) }}>
+              {attachments.length ? <div className="hui-attachments" aria-label="待发送附件">
+                {attachments.map(file => <div key={file.id} className="hui-attachment">
+                  {file.mime.startsWith('image/') ? <img src={file.url} alt="" /> : <span className="hui-attachment-icon">▤</span>}
+                  <span className="truncate" title={file.name}>{file.name}</span>
+                  <button type="button" aria-label={`移除 ${file.name}`} onClick={() => setAttachments(previous => previous.filter(item => item.id !== file.id))}>×</button>
+                </div>)}
+              </div> : null}
               <textarea
+                ref={textareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={(event: ClipboardEvent<HTMLTextAreaElement>) => {
+                  const files = Array.from(event.clipboardData.files)
+                  if (files.length) { event.preventDefault(); void addFiles(files) }
+                }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault()
                     void send()
                   }
@@ -1238,24 +1451,21 @@ export default function App(): React.ReactElement {
                     : '等待 opencode 启动…'
                 }
                 disabled={server?.status !== 'ready' || !workspace}
-                className="max-h-40 min-h-[22px] w-full resize-none bg-transparent px-3 py-1.5 text-[13.5px] text-white/90 outline-none placeholder:text-white/35 disabled:opacity-50"
+                className="hui-composer-textarea min-h-[32px] w-full resize-none bg-transparent px-3 py-1.5 text-[13.5px] text-white/90 outline-none placeholder:text-white/35 disabled:opacity-50"
               />
               <div className="mt-1 flex items-center gap-2 px-1">
-                <Select
+                <input ref={fileInputRef} type="file" multiple className="hidden" onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
+                <button type="button" title="添加图片或文件" aria-label="添加图片或文件" disabled={server?.status !== 'ready' || !workspace} onClick={() => fileInputRef.current?.click()} className="hui-attach-button">＋</button>
+                <GlassSelect
                   value={selectedAgent ?? ''}
                   onChange={setSelectedAgent}
                   title="Agent"
                   disabled={agents.length === 0 || server?.status !== 'ready'}
-                >
-                  {agents.length === 0 ? <option value="">agent…</option> : null}
-                  {agents.map((a) => (
-                    <option key={a.name} value={a.name}>
-                      {a.name}
-                    </option>
-                  ))}
-                </Select>
+                  empty="agent…"
+                  options={agents.map(agent => ({ value: agent.name, label: agent.name }))}
+                />
 
-                <Select
+                <GlassSelect
                   value={selectedModel ? `${selectedModel.providerID}/${selectedModel.modelID}` : ''}
                   onChange={(v) => {
                     const idx = v.indexOf('/')
@@ -1264,21 +1474,9 @@ export default function App(): React.ReactElement {
                   }}
                   title="模型"
                   disabled={models.length === 0 || server?.status !== 'ready'}
-                >
-                  {models.length === 0 ? <option value="">加载模型…</option> : null}
-                  {modelGroups.map(([pid, items]) => (
-                    <optgroup key={pid} label={items[0].providerName}>
-                      {items.map((m) => (
-                        <option
-                          key={`${m.providerID}/${m.modelID}`}
-                          value={`${m.providerID}/${m.modelID}`}
-                        >
-                          {m.modelName}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </Select>
+                  empty="加载模型…"
+                  options={modelGroups.flatMap(([, items]) => items.map(model => ({ value: `${model.providerID}/${model.modelID}`, label: model.modelName, group: model.providerName })))}
+                />
 
                 <div className="flex-1" />
 
@@ -1292,7 +1490,7 @@ export default function App(): React.ReactElement {
                 ) : (
                   <button
                     onClick={() => void send()}
-                    disabled={!input.trim() || server?.status !== 'ready' || !workspace}
+                    disabled={(!input.trim() && attachments.length === 0) || server?.status !== 'ready' || !workspace}
                     className="rounded-xl bg-white/90 px-4 py-2 text-[13px] font-semibold text-slate-900 transition hover:bg-white disabled:opacity-40"
                   >
                     发送
@@ -1301,6 +1499,7 @@ export default function App(): React.ReactElement {
               </div>
             </div>
           </div>
+          {questions[0] && questions[0].sessionID === activeId ? <QuestionDialog key={questions[0].id} request={questions[0]} busy={answeringQuestion} onReply={answers => void resolveQuestion(questions[0], answers)} onReject={() => void resolveQuestion(questions[0])} /> : null}
         </main>
       </div>
     </div>

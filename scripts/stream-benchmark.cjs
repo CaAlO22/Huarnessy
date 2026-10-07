@@ -4,6 +4,7 @@ const { join } = require('node:path')
 const workspaceRegressions = require('./workspace-regressions.cjs')
 const replyUIRegressions = require('./reply-ui-regressions.cjs')
 const messageActionsRegressions = require('./message-actions-regressions.cjs')
+const composerRegressions = require('./composer-regressions.cjs')
 const { writeFile } = require('node:fs/promises')
 const screenshotRunId = `${Date.now()}-${process.pid}`
 const previewPath = name => join(__dirname, '../out', `${screenshotRunId}-${name}`)
@@ -376,6 +377,15 @@ app.whenReady().then(async () => {
       console.log(JSON.stringify({ mathLayout: await window.webContents.executeJavaScript(`(() => { const formulas = Array.from(document.querySelectorAll('.hui-md .katex:has(.mfrac)')); return formulas.map(formula => { const r = formula.getBoundingClientRect(); const p = formula.closest('p'); const pr = p?.getBoundingClientRect(); return { text: formula.textContent?.slice(0, 48), formulaHeight: r.height, paragraphHeight: pr?.height, lineHeight: p && getComputedStyle(p).lineHeight, display: !!formula.closest('.katex-display') } }) })()`) }))
       await window.webContents.executeJavaScript(`window.benchEmit('message.removed', { sessionID: 'benchmark-session', messageID: 'math-preview' })`)
       await new Promise(resolve => setTimeout(resolve, 100))
+      await window.webContents.executeJavaScript(`document.querySelector('[aria-label="模型"]').click()`)
+      await new Promise(resolve => setTimeout(resolve, 220))
+      await writeFile(previewPath('model-menu-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`document.querySelector('[aria-label="模型"]').click()`)
+      await window.webContents.executeJavaScript(`window.benchEmit('question.asked', { id: 'visual-question', sessionID: 'benchmark-session', questions: [{ header: '运行方式', question: '你希望用哪种方式启动应用？', options: [{ label: '开发模式', description: '启动带热更新的开发窗口' }, { label: '预览模式', description: '启动生产构建的预览窗口' }] }] })`)
+      await new Promise(resolve => setTimeout(resolve, 260))
+      await writeFile(previewPath('question-dialog-preview.png'), (await window.webContents.capturePage()).toPNG())
+      await window.webContents.executeJavaScript(`window.benchEmit('question.rejected', { sessionID: 'benchmark-session', requestID: 'visual-question' })`)
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
     if (process.env.BENCH_VISUAL_ONLY) {
       console.log(JSON.stringify({ previewRun: screenshotRunId }))
@@ -405,6 +415,7 @@ app.whenReady().then(async () => {
     }
     if (!process.env.BENCH_LAYOUT_ONLY) {
       console.log(JSON.stringify({ regressions: await window.webContents.executeJavaScript(`(${regressions.toString()})()`) }))
+      console.log(JSON.stringify({ composer: await window.webContents.executeJavaScript(`(${composerRegressions.toString()})()`) }))
       console.log(JSON.stringify({ workspaces: await window.webContents.executeJavaScript(`(${workspaceRegressions.toString()})()`) }))
       if (process.env.BENCH_SCREENSHOT) await writeFile(process.env.BENCH_SCREENSHOT, (await window.webContents.capturePage()).toPNG())
       console.log(JSON.stringify({ sessionDeletion: await window.webContents.executeJavaScript(`(${sessionDeletionRegressions.toString()})()`) }))

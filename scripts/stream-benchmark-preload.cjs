@@ -23,6 +23,7 @@ window.benchSessions = [
 ]
 window.benchRequests = []
 window.benchMessages = {}
+window.benchQuestions = []
 window.benchClipboard = ''
 Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
   writeText: async text => { window.benchClipboard = text }
@@ -43,6 +44,12 @@ window.fetch = async (url, options) => {
     return new Response(JSON.stringify(session), { headers: { 'Content-Type': 'application/json' } })
   }
   if (path.endsWith('/prompt_async')) return new Response(null, { status: 204 })
+  if (path === '/question' && method === 'GET') return new Response(JSON.stringify(window.benchQuestions), { headers: { 'Content-Type': 'application/json' } })
+  if (/^\/question\/[^/]+\/(reply|reject)$/.test(path)) {
+    const id = decodeURIComponent(path.split('/')[2])
+    window.benchQuestions = window.benchQuestions.filter(question => question.id !== id)
+    return new Response('true', { headers: { 'Content-Type': 'application/json' } })
+  }
   if (path.endsWith('/abort')) return new Response('true', { headers: { 'Content-Type': 'application/json' } })
   if (path === '/session/status') return new Response('{}', { headers: { 'Content-Type': 'application/json' } })
   if (/^\/session\/[^/]+\/revert$/.test(path) && method === 'POST') {
@@ -78,7 +85,8 @@ window.fetch = async (url, options) => {
     data = window.benchMessages[id] ?? []
     if (window.benchHoldMessages === id) await new Promise(resolve => { window.benchReleaseMessages = resolve })
   }
-  else if (path === '/config/providers') data = { providers: [] }
+  else if (path === '/config/providers') data = { providers: [{ id: 'test', name: '测试模型', models: { alpha: { name: 'Alpha' }, beta: { name: 'Beta' } } }] }
+  else if (path === '/app/agents') data = [{ name: 'build', mode: 'primary' }, { name: 'plan', mode: 'primary' }]
   else if (path === '/config') data = {}
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
 }

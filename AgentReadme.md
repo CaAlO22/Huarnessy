@@ -34,6 +34,7 @@
 | 构建 | electron-vite 5（Vite 7） |
 | UI | React 19 + TypeScript 7 |
 | 样式 | Tailwind CSS v4（`@tailwindcss/vite`） |
+| 界面字体 | 本地打包的 Noto Sans SC Variable（SIL OFL 1.1；授权副本在 `src/renderer/public/licenses/`） |
 | Markdown | Worker 中的 `unified` + `remark-parse` + `remark-gfm` + `remark-math` + `remark-rehype` + `rehype-stringify`；`react-markdown` 提供安全 URL 转换 |
 | 高亮/公式 | `highlight.js`、`katex` |
 | 内核通信 | `@opencode-ai/sdk/client`（REST）+ 原生 `EventSource`（SSE） |
@@ -52,6 +53,7 @@ OpencodeHUI/
 │  ├─ stream-benchmark.mjs     # 启动开发服务器或生产页面及 Electron 测试进程
 │  ├─ stream-benchmark.cjs     # 流式性能测量与显示/事件/滚动回归断言
 │  ├─ stream-benchmark-preload.cjs # 页面加载前注入假内核，无真实模型请求
+│  ├─ composer-regressions.cjs # 输入区附件、伸缩、选择面板及 Question 回归
 │  ├─ workspace-regressions.cjs # 工作空间切换、目录作用域及迟到请求回归
 │  └─ workspace-store.test.mjs # 工作空间持久化、路径验证与目录比较测试
 └─ src/
@@ -190,6 +192,9 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 - 顶部“设置”中的“面板透明度”滑杆统一控制主面板、侧栏、输入框、消息气泡、步骤和工具调用的底色强度，默认 55%，保存于渲染进程的 `localStorage`（`hui.panelTransparency`）。当前回复和折叠步骤使用同一套玻璃底色、边框与阴影，透明度变化只影响面板底色，不改变文字透明度。
 - 顶部“设置 → 对话正文字号”滑杆即时调整 `.hui-md` 正文（13–20px，步长 0.5px，默认 15.5px），保存于 `localStorage` 的 `hui.chatFontSize`。Worker 将行内和行间公式里的 `\frac` 转成 `\dfrac`，并同步 remark-math 的渲染节点，让嵌套分式也使用清楚的展示样式。独占段落的公式改为左对齐的行间布局；嵌在文字中的公式仍保持行内。行间公式增加上下留白，避免分式被裁切。代码块保持自己的固定字体。`--screenshot` 的 `math-preview.png` 使用假内核复现带嵌套分母的 Z 变换推导，供排版目视检查。
 - 用户消息气泡下方提供“复制”“撤回”。复制的是原始文本（保留 Markdown 源码）。撤回可选任意用户轮次，调用当前工作空间的 `session.revert({ messageID })`；opencode 会同时回退该轮及之后的回复与相关工作区文件改动。服务端通过会话的 `revert.messageID` 保留撤回边界，客户端据此隐藏该边界后的历史消息；输入框上方显示撤回轮数和“恢复撤回”，后者调用 `session.unrevert`。切换会话后读取 `session.get` 恢复边界；发出新一轮对话后不再提供恢复按钮，待内核清理已撤回消息。撤回进行中禁止重复点击，失败保持原对话，切换会话/工作空间时忽略迟到结果。`scripts/message-actions-regressions.cjs` 使用假内核覆盖这些操作。
+- 底部 Agent/模型选择改用向上展开的玻璃菜单，带开关动画；输入框随内容增长，最高 192px，之后在输入框内部滚动。粘贴、拖拽和“＋”文件选择可添加图片或文件，发送时按 SDK 的 `FilePartInput` 用 data URL 与文本一起提交，单文件上限 25 MB。切换工作空间时清空待发送附件和未完成的文件读取。
+- 界面正文统一使用随应用打包的 Noto Sans SC Variable；代码块、行内代码、工作空间路径和 KaTeX 保持各自的等宽/数学字体。字体 CSS 在 `main.tsx` 引入，构建后的字体文件无需联网加载；发布产物同时包含 `licenses/noto-sans-sc-OFL.txt`。
+- `question.asked` SSE 事件及 `question.list` 用于显示当前会话的待答问题；弹出的玻璃询问框支持单选、多选和自定义回答，以当前目录调用 `question.reply` / `question.reject`。切换会话时重新读取待答列表，并忽略旧请求的迟到响应。Question 工具气泡仅显示状态，不再展开原始 JSON。`scripts/composer-regressions.cjs` 用假内核验证这些交互。
 
 ---
 
