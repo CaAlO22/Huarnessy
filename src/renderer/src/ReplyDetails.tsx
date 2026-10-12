@@ -52,6 +52,7 @@ function latencyLabel(seconds: number | null): string {
 export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.ReactElement {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
+  const anchorRoot = useRef<HTMLDivElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const content = useRef<HTMLDivElement>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -59,6 +60,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
   const [open, setOpen] = useState(false)
   const motion = useRef<Animation | null>(null)
   const contentMotion = useRef<Animation | null>(null)
+  const anchorFrame = useRef<number | null>(null)
   const cancel = (): void => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null }
   const close = (): void => { cancel(); pinned.current = false; setOpen(false) }
   const enter = (): void => { cancel(); timer.current = setTimeout(() => setOpen(true), 120) }
@@ -71,16 +73,21 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
     }, 100)
   }
   useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current) }, [])
-  useEffect(() => () => { motion.current?.cancel(); contentMotion.current?.cancel() }, [])
+  useEffect(() => () => {
+    motion.current?.cancel(); contentMotion.current?.cancel()
+    if (anchorFrame.current !== null) cancelAnimationFrame(anchorFrame.current)
+  }, [])
   useLayoutEffect(() => {
     const surface = panel.current
     const body = content.current
     const button = trigger.current
-    if (!surface || !body || !button) return
+    const root = anchorRoot.current
+    if (!surface || !body || !button || !root) return
     if (!open && surface.dataset.visible !== 'true') return
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const wasVisible = surface.dataset.visible === 'true'
     const anchor = button.getBoundingClientRect()
+    root.style.transform = `translate(${anchor.left}px, ${anchor.top}px)`
     // The same glass changes its actual bounds; text is never scaled. Capture
     // the current frame so reversing mid-flight does not reset the geometry.
     const current = getComputedStyle(surface)
@@ -92,7 +99,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
     motion.current?.cancel()
     contentMotion.current?.cancel()
     const circle = {
-      left: `${anchor.left}px`, top: `${anchor.top}px`,
+      left: '0px', top: '0px',
       width: `${anchor.width}px`, height: `${anchor.height}px`, borderRadius: '14px'
     }
     let target = circle
@@ -106,7 +113,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
       const top = Math.max(12, Math.min(below ? anchor.top : anchor.bottom - height, window.innerHeight - height - 12))
       // The icon's corner keeps the circle's 14px radius and center, while
       // the other corners soften into the card. Never interpolate that corner.
-      target = { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`,
+      target = { left: `${left - anchor.left}px`, top: `${top - anchor.top}px`, width: `${width}px`, height: `${height}px`,
         borderRadius: below ? '18px 14px 18px 18px' : '18px 18px 14px 18px' }
       surface.dataset.below = String(below)
       surface.dataset.visible = 'true'
@@ -122,9 +129,23 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
       { opacity: wasVisible ? textOpacity : 0 }, { opacity: open ? 1 : 0 }
     ], { duration: reduced ? 0 : open ? 220 : 100, delay: reduced || !open || wasVisible ? 0 : 150, fill: 'both', easing: 'ease-out' })
     motion.current = animation
+    // Animate geometry relative to the real button, not stale viewport pixels.
+    // Keep tracking through exit too: scroll listeners stop once open is false.
+    if (anchorFrame.current === null) {
+      const follow = (): void => {
+        anchorFrame.current = null
+        if (surface.dataset.visible !== 'true' || !button.isConnected) return
+        const bounds = button.getBoundingClientRect()
+        root.style.transform = `translate(${bounds.left}px, ${bounds.top}px)`
+        anchorFrame.current = requestAnimationFrame(follow)
+      }
+      anchorFrame.current = requestAnimationFrame(follow)
+    }
     void animation.finished.then(() => {
       if (!open && motion.current === animation) {
         surface.dataset.visible = 'false'
+        if (anchorFrame.current !== null) cancelAnimationFrame(anchorFrame.current)
+        anchorFrame.current = null
         delete button.dataset.surface
         animation.cancel()
       }
@@ -169,7 +190,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
         <circle cx="10" cy="6.2" r=".9" fill="currentColor" />
       </svg>
     </button>
-    {createPortal(<div ref={panel} id={id} className="hui-reply-details-panel" role="dialog" aria-label="生成详情"
+    {createPortal(<div ref={anchorRoot} className="hui-reply-details-root"><div ref={panel} id={id} className="hui-reply-details-panel" role="dialog" aria-label="生成详情"
       aria-hidden={!open} inert={!open} data-open={open}
       style={{ backdropFilter: 'blur(12px) saturate(125%)' }}
       onPointerEnter={cancel} onPointerLeave={leave} onFocus={cancel} onBlur={leave}>
@@ -193,6 +214,6 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
           <circle cx="10" cy="6.2" r=".9" fill="currentColor" />
         </svg>
       </button>
-    </div>, document.body)}
+    </div></div>, document.body)}
   </div>
 }

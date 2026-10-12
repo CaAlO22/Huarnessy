@@ -950,8 +950,11 @@ body {
 .hui-reply-info:hover, .hui-reply-info[aria-expanded='true'] { color: #eef2f7; }
 .hui-reply-info[data-surface='expanded'] { opacity: 0; }
 .hui-reply-info:focus-visible { outline: 2px solid #9cc9ef; outline-offset: 2px; }
+.hui-reply-details-root {
+  position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 1000; pointer-events: none;
+}
 .hui-reply-details-panel {
-  position: fixed; z-index: 1000; box-sizing: border-box;
+  position: absolute; box-sizing: border-box;
   width: 320px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow: hidden;
   padding: 0; border-radius: 18px; border: 1px solid rgba(255,255,255,.14);
   background: linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.015)), rgba(24,26,30,.46); color: #eef1f6;

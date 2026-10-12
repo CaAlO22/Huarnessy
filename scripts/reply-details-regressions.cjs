@@ -36,7 +36,7 @@ module.exports = async () => {
   check(clearance() >= 24 && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 2, 'shrinking the composer preserves the bottom clearance')
   check(!!trigger && !document.querySelector('.hui-reply-stats'), 'final bubble owns the info button without a persistent caption')
   const panel = document.getElementById(trigger.getAttribute('aria-controls'))
-  check(panel.parentElement === document.body && panel.getAttribute('aria-hidden') === 'true', 'details start hidden and escape bubble clipping through a portal')
+  check(panel.parentElement.parentElement === document.body && panel.getAttribute('aria-hidden') === 'true', 'details start hidden and escape bubble clipping through a portal')
   check(getComputedStyle(trigger).backgroundImage !== 'none' && getComputedStyle(trigger).backdropFilter.includes('blur'), 'the collapsed info glyph rests on a circular glass surface')
   trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
   await wait(80)
@@ -70,7 +70,34 @@ module.exports = async () => {
   panel.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: document.body }))
   await wait(140)
   check(trigger.getAttribute('aria-expanded') === 'false', 'leaving an unpinned panel starts closing without requiring a click')
+  const alignedIcon = () => {
+    const icon = panel.querySelector('.hui-reply-details-anchor').getBoundingClientRect()
+    const anchor = trigger.getBoundingClientRect()
+    return Math.abs(icon.left + icon.width / 2 - anchor.left - anchor.width / 2) < 1
+      && Math.abs(icon.top + icon.height / 2 - anchor.top - anchor.height / 2) < 1
+  }
+  for (let frame = 0; frame < 5; frame++) {
+    scroller.scrollTop -= 10
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    check(alignedIcon(), `the shrinking glass follows the message during continued scrolling (frame ${frame})`)
+  }
   await wait(400)
+  scroller.scrollTop = scroller.scrollHeight
+  await wait(50)
+  trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+  await wait(220)
+  check(panel.dataset.visible === 'true' && panel.getBoundingClientRect().width < 320, 'scroll regression starts while the glass is still expanding')
+  scroller.scrollTop -= 30
+  await new Promise(resolve => requestAnimationFrame(resolve))
+  check(alignedIcon(), 'scrolling mid-expansion keeps the portal icon aligned with its real message button')
+  for (let frame = 0; frame < 5; frame++) {
+    scroller.scrollTop -= 10
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    check(alignedIcon(), `scroll-triggered closing continues following the moving button (frame ${frame})`)
+  }
+  await wait(400)
+  scroller.scrollTop = scroller.scrollHeight
+  await wait(50)
   trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
   await wait(180)
   trigger.click()
