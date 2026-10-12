@@ -9,6 +9,7 @@ import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu
 import { sameWorkspace } from './workspace-path'
 import { ReplyPresentation, hasVisiblePart } from './ReplyPresentation'
 import { ReplyDetails, replyMetrics, type ReplyMetrics } from './ReplyDetails'
+import { StreamObservations } from './stream-observations'
 import { useLiquidGlassSurface } from './LiquidGlass'
 import { MottledBackground } from './MottledBackground'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
@@ -518,6 +519,7 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
   && (previous.metrics === next.metrics || (!!previous.metrics && !!next.metrics
     && previous.metrics.model === next.metrics.model && previous.metrics.provider === next.metrics.provider
     && previous.metrics.seconds === next.metrics.seconds && previous.metrics.speed === next.metrics.speed
+    && previous.metrics.firstTokenSeconds === next.metrics.firstTokenSeconds
     && previous.metrics.tokens === next.metrics.tokens))
   && previous.messages.length === next.messages.length
   && previous.messages.every((message, index) => message === next.messages[index]))
@@ -869,6 +871,9 @@ export default function App(): React.ReactElement {
     })
   }, [])
   const sendingRef = useRef(false)
+  const [observations] = useState(() => {
+    try { return new StreamObservations(window.localStorage) } catch { return new StreamObservations() }
+  })
   // Compaction is driven by the kernel, not a submitted prompt, so it gets its
   // own centered bubble instead of a user echo plus a reply turn.
   const [compactingSessionId, setCompactingSessionId] = useState<string | null>(null)
@@ -1237,6 +1242,7 @@ export default function App(): React.ReactElement {
   }, [clearEvents, flushEvents, closeSessionMenu, loadQuestions])
 
   const forgetSession = useCallback((id: string) => {
+    if (workspaceRef.current) observations.receive(workspaceRef.current, 'session.deleted', { info: { id } })
     deletedSessions.current.add(id)
     setSessions(previous => previous.filter(session => session.id !== id))
     setSessionMenu(previous => previous?.id === id ? null : previous)
@@ -1292,6 +1298,7 @@ export default function App(): React.ReactElement {
   const resetWorkspaceView = useCallback(() => {
     // Invalidate the old client immediately, before React reconnects the next
     // workspace. Late requests and already-queued SSE handlers become inert.
+    observations.disconnect()
     clientRef.current = null
     questionClientRef.current = null
     questionVersion.current++
@@ -1391,6 +1398,7 @@ export default function App(): React.ReactElement {
     const es = new EventSource(eventUrl.href)
     esRef.current = es
     es.onopen = () => { if (clientRef.current === client) void reloadPermissions() }
+    es.onerror = () => { if (clientRef.current === client) observations.disconnect() }
     es.onmessage = (e) => {
       if (clientRef.current !== client) return
       let evt: any
@@ -1404,6 +1412,7 @@ export default function App(): React.ReactElement {
       const t = evt?.type
       const p = evt?.properties ?? {}
       if (p.info?.directory && !sameWorkspace(p.info.directory, workspace)) return
+      observations.receive(workspace, t, p)
       const active = activeIdRef.current
       if (t === 'permission.asked' || t === 'permission.replied') receivePermission(t, p)
 
@@ -1475,6 +1484,7 @@ export default function App(): React.ReactElement {
     }
 
     return () => {
+      observations.disconnect()
       es.close()
       clearEvents()
       if (esRef.current === es) esRef.current = null
@@ -1641,6 +1651,7 @@ export default function App(): React.ReactElement {
     rangeReading.current = false
     setFollowingReply(true)
 
+    let observedSession: string | null = null
     try {
       let id = activeIdRef.current
       if (!id) {
@@ -1659,6 +1670,10 @@ export default function App(): React.ReactElement {
       }
       if (c !== clientRef.current) return
       if (!id) { markSessionBusy(requestId, false); return }
+      if (workspaceRef.current) {
+        observations.begin(workspaceRef.current, id, beforeRequestUserId.current)
+        observedSession = id
+      }
       if (command) {
         await c.session.command({ path: { id }, body: { command: command.name, arguments: commandMatch?.[2] ?? '', ...(selectedVariant ? { variant: selectedVariant } : {}) }, throwOnError: true })
       } else {
@@ -1671,6 +1686,7 @@ export default function App(): React.ReactElement {
       }
     } catch (e) {
       if (c !== clientRef.current) return
+      if (workspaceRef.current && observedSession) observations.finish(workspaceRef.current, observedSession)
       setLastError(`发送失败：${e instanceof Error ? e.message : String(e)}`)
       markSessionBusy(requestId, false)
     } finally {
@@ -1824,7 +1840,8 @@ export default function App(): React.ReactElement {
     }
     const textLength = groups.at(-1)?.flatMap(group => group.parts).reduce((count, part) =>
       count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
-    const metrics = waiting ? null : replyMetrics(turnUser, turnReplies)
+    const observed = workspace && activeId ? observations.metrics(workspace, activeId, turnReplies) : undefined
+    const metrics = waiting ? null : replyMetrics(turnUser, turnReplies, observed)
     conversation.push(
       <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength} liquidGlass={liquidGlass}>
         {(visibleChars) => <StepList groups={groups} metrics={metrics} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} onExpandRange={() => { rangeReading.current = true; stickBottom.current = false; setFollowingReply(false) }} />}

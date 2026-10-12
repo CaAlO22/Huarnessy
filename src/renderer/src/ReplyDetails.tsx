@@ -7,35 +7,32 @@ export interface ReplyMetrics {
   provider: string
   seconds: number | null
   speed: number | null
+  firstTokenSeconds: number | null
   tokens: number | null
 }
 
-// Completed kernel timestamps describe whole assistant steps, not exact token
-// arrival times. Keep missing measurements explicit and label the rate estimate.
-export function replyMetrics(user: MessageEntry | null, replies: MessageEntry[]): ReplyMetrics | null {
+// End-to-end duration comes from the kernel; observed latency and throughput
+// come only from live SSE receipt timings, never from whole-step durations.
+export function replyMetrics(user: MessageEntry | null, replies: MessageEntry[], observed?: { firstTokenSeconds: number | null; speed: number | null }): ReplyMetrics | null {
   const assistants = replies.filter(message => message.info?.role === 'assistant')
   if (!assistants.length || assistants.some(message => !Number.isFinite(message.info?.time?.completed))) return null
   const last = assistants.at(-1)!
   const start = user?.info?.time?.created ?? assistants[0].info?.time?.created
   const end = Math.max(...assistants.map(message => message.info.time.completed))
   let tokens = 0
-  let duration = 0
   let completeUsage = true
-  let completeTiming = true
   for (const { info } of assistants) {
     const output = info.tokens?.output
     const reasoning = info.tokens?.reasoning
     if (!Number.isFinite(output) || !Number.isFinite(reasoning)) completeUsage = false
     else tokens += output + reasoning
-    const elapsed = info.time.completed - info.time.created
-    if (!Number.isFinite(elapsed) || elapsed <= 0) completeTiming = false
-    else duration += elapsed
   }
   return {
     model: last.info?.modelID || '未提供',
     provider: last.info?.providerID || '未提供',
     seconds: Number.isFinite(start) && end > start ? (end - start) / 1000 : null,
-    speed: completeUsage && completeTiming && tokens > 0 ? tokens / (duration / 1000) : null,
+    speed: observed?.speed ?? null,
+    firstTokenSeconds: observed?.firstTokenSeconds ?? null,
     tokens: completeUsage ? tokens : null
   }
 }
@@ -45,6 +42,11 @@ function durationLabel(seconds: number | null): string {
   if (seconds < 60) return `${seconds.toFixed(1)} 秒`
   const rounded = Math.round(seconds)
   return `${Math.floor(rounded / 60)} 分 ${rounded % 60} 秒`
+}
+
+function latencyLabel(seconds: number | null): string {
+  if (seconds === null) return '未提供'
+  return seconds < 1 ? `${Math.round(seconds * 1000)} ms` : `${seconds.toFixed(2)} 秒`
 }
 
 export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.ReactElement {
@@ -176,9 +178,9 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
       <dl>
         <div><dt>模型</dt><dd>{metrics.model}</dd></div>
         <div><dt>提供商</dt><dd>{metrics.provider}</dd></div>
-        <div><dt>首 token 延迟</dt><dd>未提供</dd></div>
+        <div><dt>观测首 token 延迟</dt><dd>{latencyLabel(metrics.firstTokenSeconds)}</dd></div>
         <div><dt>端到端耗时</dt><dd>{durationLabel(metrics.seconds)}</dd></div>
-        <div><dt>输出速度（估算）</dt><dd>{metrics.speed === null ? '未提供' : `${metrics.speed.toFixed(1)} token/秒`}</dd></div>
+        <div><dt>观测输出速度</dt><dd>{metrics.speed === null ? '未提供' : `${metrics.speed.toFixed(1)} token/秒`}</dd></div>
         <div><dt>输出及思考 token</dt><dd>{metrics.tokens === null ? '未提供' : metrics.tokens.toLocaleString()}</dd></div>
       </dl>
       </div>
