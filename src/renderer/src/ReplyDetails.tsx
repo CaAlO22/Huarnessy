@@ -54,31 +54,66 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pinned = useRef(false)
   const [open, setOpen] = useState(false)
-  const [position, setPosition] = useState({ left: 0, top: 0, below: false, originX: 0, originY: 0 })
+  const motion = useRef<Animation | null>(null)
   const cancel = (): void => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null }
   const close = (): void => { cancel(); pinned.current = false; setOpen(false) }
-  const enter = (): void => { cancel(); timer.current = setTimeout(() => setOpen(true), 200) }
+  const enter = (): void => { cancel(); timer.current = setTimeout(() => setOpen(true), 120) }
   const leave = (): void => {
     cancel()
     if (!pinned.current) timer.current = setTimeout(() => {
-      if (!panel.current?.contains(document.activeElement) && document.activeElement !== trigger.current) setOpen(false)
-    }, 180)
+      const focused = document.activeElement
+      const keyboardFocus = focused === trigger.current && trigger.current?.matches(':focus-visible')
+      if (!panel.current?.contains(focused) && !keyboardFocus) setOpen(false)
+    }, 100)
   }
   useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current) }, [])
+  useEffect(() => () => motion.current?.cancel(), [])
   useLayoutEffect(() => {
-    if (!open || !trigger.current || !panel.current) return
-    const anchor = trigger.current.getBoundingClientRect()
-    const width = panel.current.offsetWidth
-    const height = panel.current.offsetHeight
-    const below = anchor.top < height + 20
-    const left = Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))
-    const top = Math.max(12, Math.min(below ? anchor.bottom + 8 : anchor.top - height - 8, window.innerHeight - height - 12))
-    setPosition({
-      left, top, below,
-      originX: anchor.left + anchor.width / 2 - left,
-      originY: anchor.top + anchor.height / 2 - top
-    })
-  }, [open, metrics])
+    const surface = panel.current
+    const button = trigger.current
+    if (!surface || !button) return
+    if (!open && surface.dataset.visible !== 'true') return
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const wasVisible = surface.dataset.visible === 'true'
+    // Read the current animated frame before cancelling. A quick reversal
+    // continues here rather than jumping to an opening/closing CSS endpoint.
+    const current = getComputedStyle(surface)
+    const fromTransform = current.transform
+    const fromOpacity = current.opacity
+    motion.current?.cancel()
+    if (open) {
+      const anchor = button.getBoundingClientRect()
+      const width = surface.offsetWidth
+      const height = surface.offsetHeight
+      const below = anchor.top < height + 20
+      const left = Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))
+      const top = Math.max(12, Math.min(below ? anchor.bottom + 8 : anchor.top - height - 8, window.innerHeight - height - 12))
+      surface.style.left = `${left}px`
+      surface.style.top = `${top}px`
+      surface.style.transformOrigin = `${anchor.left + anchor.width / 2 - left}px ${anchor.top + anchor.height / 2 - top}px`
+      surface.dataset.below = String(below)
+      surface.dataset.visible = 'true'
+    }
+    const shift = surface.dataset.below === 'true' ? -6 : 6
+    const tucked = `translateY(${shift}px) scale(.96, .92)`
+    const frames = open ? [
+      { transform: wasVisible ? fromTransform : tucked, opacity: wasVisible ? fromOpacity : 0, offset: 0, easing: 'cubic-bezier(.18,.75,.25,1)' },
+      { transform: 'translateY(0) scale(1.006, 1.01)', opacity: 1, offset: .72, easing: 'cubic-bezier(.3,0,.3,1)' },
+      { transform: 'translateY(0) scale(1)', opacity: 1, offset: 1 }
+    ] : [
+      { transform: fromTransform, opacity: fromOpacity, easing: 'cubic-bezier(.2,.65,.3,1)' },
+      { transform: tucked, opacity: 0 }
+    ]
+    const animation = surface.animate(reduced ? [{ opacity: open ? 1 : 0, transform: 'none' }] : frames,
+      { duration: reduced ? 0 : open ? 300 : 150, fill: 'both' })
+    motion.current = animation
+    void animation.finished.then(() => {
+      if (!open && motion.current === animation) {
+        surface.dataset.visible = 'false'
+        animation.cancel()
+      }
+    }, () => { /* Reopening or unmounting cancels the previous animation. */ })
+  }, [open])
   useEffect(() => {
     if (!open) return
     const outside = (event: PointerEvent): void => {
@@ -118,8 +153,8 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
       </svg>
     </button>
     {createPortal(<div ref={panel} id={id} className="hui-reply-details-panel" role="dialog" aria-label="生成详情"
-      aria-hidden={!open} inert={!open} data-open={open} data-below={position.below}
-      style={{ left: position.left, top: position.top, transformOrigin: `${position.originX}px ${position.originY}px`, backdropFilter: 'blur(12px) saturate(125%)' }}
+      aria-hidden={!open} inert={!open} data-open={open}
+      style={{ backdropFilter: 'blur(12px) saturate(125%)' }}
       onPointerEnter={cancel} onPointerLeave={leave} onFocus={cancel} onBlur={leave}>
       <h3>生成详情</h3>
       <dl>

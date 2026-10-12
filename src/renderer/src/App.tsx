@@ -1516,19 +1516,22 @@ export default function App(): React.ReactElement {
     }
   }, [])
 
-  // The composer floats above the conversation, so reserve matching bottom
-  // space in the scroll area; otherwise the last message stays hidden behind it.
-  useEffect(() => {
+  // Reserve space inside the content flow, including a clear gap above the
+  // floating composer. Reapply the bottom position when the dock grows.
+  useLayoutEffect(() => {
     const el = scrollRef.current
     const dock = composerDockRef.current
     if (!el || !dock) return
-    const apply = (): void => { el.style.paddingBottom = `${Math.round(dock.getBoundingClientRect().height) + 20}px` }
+    const apply = (): void => {
+      el.style.setProperty('--hui-composer-reserve', `${Math.ceil(dock.getBoundingClientRect().height) + 12}px`)
+      if (stickBottom.current) el.scrollTop = el.scrollHeight
+    }
     const observer = new ResizeObserver(apply)
     observer.observe(dock)
     apply()
     return () => {
       observer.disconnect()
-      el.style.removeProperty('padding-bottom')
+      el.style.removeProperty('--hui-composer-reserve')
     }
   }, [])
 
@@ -2144,7 +2147,7 @@ export default function App(): React.ReactElement {
             }}
             className="hui-chat-scroll min-h-0 flex-1 overflow-y-auto p-5"
           >
-            <div ref={contentRef} className={`space-y-4 ${visibleMessages.length === 0 && !busy ? 'h-full' : ''}`}>
+            <div ref={contentRef} className={`hui-chat-content space-y-4 ${visibleMessages.length === 0 && !busy ? 'h-full' : ''}`}>
               {visibleMessages.length === 0 && !busy ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
                   <div className="text-lg font-medium text-white/60">开始一段对话</div>

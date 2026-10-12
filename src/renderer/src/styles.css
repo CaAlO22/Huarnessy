@@ -929,6 +929,10 @@ body {
   scrollbar-gutter: stable;
 }
 
+/* Content-owned space survives missing initial dock measurements and reserves
+   the complete dock height plus a 32px gap (including scroll-area padding). */
+.hui-chat-content { padding-bottom: var(--hui-composer-reserve, 160px); }
+
 /* Keep the waiting transition on one node, then let each call own its surface. */
 .hui-reply-center { display: flex; justify-content: center; }
 /* A quiet disclosure belongs to the final bubble; the glass panel is portaled
@@ -950,30 +954,16 @@ body {
   background: linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.015)), rgba(24,26,30,.46); color: #eef1f6;
   box-shadow: 0 10px 32px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.1);
   opacity: 0; visibility: hidden; pointer-events: none;
-  --details-shift: 10px;
-  transform: translateY(var(--details-shift)) scale(.9);
-  transition: opacity 120ms ease-out, transform 160ms cubic-bezier(.4,0,.8,.2), visibility 160ms;
 }
-.hui-reply-details-panel[data-below='true'] { --details-shift: -10px; }
-.hui-reply-details-panel[data-open='true'] {
-  opacity: 1; visibility: visible; pointer-events: auto; transform: translateY(0) scale(1);
-  animation: hui-details-arrive 420ms both;
-}
-/* Expand from the info button, pass the resting size gently, then settle. */
-@keyframes hui-details-arrive {
-  0% { transform: translateY(var(--details-shift)) scale(.86); animation-timing-function: cubic-bezier(.16,.8,.24,1); }
-  58% { transform: translateY(0) scale(1.018); animation-timing-function: ease-in-out; }
-  80% { transform: translateY(0) scale(.996); animation-timing-function: ease-out; }
-  100% { transform: translateY(0) scale(1); }
-}
+.hui-reply-details-panel[data-visible='true'] { visibility: visible; }
+.hui-reply-details-panel[data-open='true'] { pointer-events: auto; }
 .hui-reply-details-panel h3 { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
 .hui-reply-details-panel dl { margin: 0; font-size: 12px; line-height: 1.6; }
 .hui-reply-details-panel dl > div { display: grid; grid-template-columns: 112px minmax(0,1fr); gap: 12px; padding: 5px 0; }
 .hui-reply-details-panel dt { color: rgba(232,236,242,.75); }
 .hui-reply-details-panel dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; user-select: text; }
 @media (prefers-reduced-motion: reduce) {
-  .hui-reply-details-panel, .hui-reply-info { transition: none; transform: none; }
-  .hui-reply-details-panel[data-open='true'] { animation: none; transform: none; }
+  .hui-reply-info { transition: none; }
 }
 .hui-compaction-body { padding: 12px 16px; }
 .hui-reply-bubble {
