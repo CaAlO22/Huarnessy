@@ -67,6 +67,25 @@ module.exports = async () => {
   const rect = panel.getBoundingClientRect()
   check(rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight, 'popover stays inside the viewport')
   check(getComputedStyle(panel).backdropFilter.includes('blur'), 'glass blur survives the active build mode')
+  // Force a real overlap, as in the user's screenshot. Test browser hit
+  // ordering with an interactive disclosure, not just a pointer-disabled exit.
+  const composer = document.querySelector('.hui-composer')
+  const sendButton = Array.from(composer.querySelectorAll('button')).find(button => button.textContent.trim() === '发送')
+  const sendBounds = sendButton.getBoundingClientRect()
+  const overlapPoint = { x: sendBounds.left + sendBounds.width / 2, y: sendBounds.top + sendBounds.height / 2 }
+  scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1 }))
+  scroller.scrollTop -= overlapPoint.y + 24 - trigger.getBoundingClientRect().bottom
+  await new Promise(resolve => requestAnimationFrame(resolve))
+  trigger.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+  await wait(40)
+  await Promise.all(panel.getAnimations().map(animation => animation.finished))
+  check(panel.dataset.open === 'true', 'the overlapping details remain interactive for the layer regression')
+  const glassBounds = panel.getBoundingClientRect()
+  check(overlapPoint.x > glassBounds.left && overlapPoint.x < glassBounds.right && overlapPoint.y > glassBounds.top && overlapPoint.y < glassBounds.bottom, 'layer regression creates an actual details/composer overlap')
+  for (let frame = 0; frame < 6; frame++) {
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    check(composer.contains(document.elementFromPoint(overlapPoint.x, overlapPoint.y)), `the composer owns mouse input above the overlapping interactive glass (frame ${frame})`)
+  }
   panel.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: document.body }))
   await wait(140)
   check(trigger.getAttribute('aria-expanded') === 'false', 'leaving an unpinned panel starts closing without requiring a click')

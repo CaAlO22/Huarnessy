@@ -1,5 +1,13 @@
 @import 'tailwindcss';
 
+:root {
+  /* Shared document-level order, including body portals. The chat pane must
+     remain free of stacking/backdrop roots so the composer stays in front. */
+  --hui-layer-chat-content: 1;
+  --hui-layer-chat-details: 2;
+  --hui-layer-composer: 3;
+}
+
 html,
 body,
 #root {
@@ -60,14 +68,14 @@ body {
   background: linear-gradient(135deg, rgba(255, 255, 255, calc(0.12 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(0.045 * var(--hui-panel-strength, .45))));
   pointer-events: none;
 }
-.hui-chat-pane > :not(.hui-chat-pane-backdrop) { position: relative; z-index: 1; }
+.hui-chat-pane > :not(.hui-chat-pane-backdrop) { position: relative; z-index: var(--hui-layer-chat-content); }
 /* The composer floats above the conversation instead of occupying a row below
    it, so its frosted glass samples the messages scrolling underneath and the
    pane keeps a single, complete rounded edge. The dock itself is click-through;
    only the centered column and its composer capture pointer events. */
 .hui-chat-pane > .hui-composer-dock {
   position: absolute;
-  z-index: 2;
+  z-index: var(--hui-layer-composer);
   right: 0;
   bottom: 0;
   left: 0;
@@ -951,7 +959,8 @@ body {
 .hui-reply-info[data-surface='expanded'] { opacity: 0; }
 .hui-reply-info:focus-visible { outline: 2px solid #9cc9ef; outline-offset: 2px; }
 .hui-reply-details-root {
-  position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 1000; pointer-events: none;
+  /* A bubble disclosure stays below the composer even when portaled to body. */
+  position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: var(--hui-layer-chat-details); pointer-events: none;
 }
 .hui-reply-details-panel {
   position: absolute; box-sizing: border-box;
