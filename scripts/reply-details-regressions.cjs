@@ -30,7 +30,7 @@ module.exports = async () => {
   await wait(250)
   check(trigger.getAttribute('aria-expanded') === 'true', 'moving into the panel keeps it readable')
   check(panel.textContent.includes('test-model') && panel.textContent.includes('4.0 秒') && panel.textContent.includes('30.0 token/秒'), 'metrics retain model identity, end-to-end timing and estimated output plus reasoning rate')
-  check(panel.textContent.includes('未提供') && panel.textContent.includes('非纯解码速度'), 'missing first-token timing and estimated rate are explained')
+  check(panel.textContent.includes('未提供') && panel.textContent.includes('输出速度（估算）') && !panel.querySelector('p'), 'missing timing and estimated rate stay labeled without a footer explanation')
   const rect = panel.getBoundingClientRect()
   check(rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight, 'popover stays inside the viewport')
   check(getComputedStyle(panel).backdropFilter.includes('blur'), 'glass blur survives the active build mode')

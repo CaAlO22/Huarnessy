@@ -54,7 +54,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pinned = useRef(false)
   const [open, setOpen] = useState(false)
-  const [position, setPosition] = useState({ left: 0, top: 0, below: false })
+  const [position, setPosition] = useState({ left: 0, top: 0, below: false, originX: 0, originY: 0 })
   const cancel = (): void => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null }
   const close = (): void => { cancel(); pinned.current = false; setOpen(false) }
   const enter = (): void => { cancel(); timer.current = setTimeout(() => setOpen(true), 200) }
@@ -71,10 +71,12 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
     const width = panel.current.offsetWidth
     const height = panel.current.offsetHeight
     const below = anchor.top < height + 20
+    const left = Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))
+    const top = Math.max(12, Math.min(below ? anchor.bottom + 8 : anchor.top - height - 8, window.innerHeight - height - 12))
     setPosition({
-      left: Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12)),
-      top: Math.max(12, Math.min(below ? anchor.bottom + 8 : anchor.top - height - 8, window.innerHeight - height - 12)),
-      below
+      left, top, below,
+      originX: anchor.left + anchor.width / 2 - left,
+      originY: anchor.top + anchor.height / 2 - top
     })
   }, [open, metrics])
   useEffect(() => {
@@ -117,7 +119,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
     </button>
     {createPortal(<div ref={panel} id={id} className="hui-reply-details-panel" role="dialog" aria-label="生成详情"
       aria-hidden={!open} inert={!open} data-open={open} data-below={position.below}
-      style={{ left: position.left, top: position.top, backdropFilter: 'blur(24px) saturate(140%)' }}
+      style={{ left: position.left, top: position.top, transformOrigin: `${position.originX}px ${position.originY}px`, backdropFilter: 'blur(12px) saturate(125%)' }}
       onPointerEnter={cancel} onPointerLeave={leave} onFocus={cancel} onBlur={leave}>
       <h3>生成详情</h3>
       <dl>
@@ -128,7 +130,6 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
         <div><dt>输出速度（估算）</dt><dd>{metrics.speed === null ? '未提供' : `${metrics.speed.toFixed(1)} token/秒`}</dd></div>
         <div><dt>输出及思考 token</dt><dd>{metrics.tokens === null ? '未提供' : metrics.tokens.toLocaleString()}</dd></div>
       </dl>
-      <p>总耗时包含等待与工具执行。速度按输出及思考 token ÷ 各助手步骤耗时估算，包含步骤内等待，非纯解码速度。内核未提供首 token 时间戳。</p>
     </div>, document.body)}
   </div>
 }
