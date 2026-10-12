@@ -42,7 +42,6 @@ body {
 .glass {
   background: linear-gradient(135deg, rgba(255, 255, 255, calc(0.12 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(0.045 * var(--hui-panel-strength, .45))));
   backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.22),
@@ -62,6 +61,20 @@ body {
   pointer-events: none;
 }
 .hui-chat-pane > :not(.hui-chat-pane-backdrop) { position: relative; z-index: 1; }
+/* The composer floats above the conversation instead of occupying a row below
+   it, so its frosted glass samples the messages scrolling underneath and the
+   pane keeps a single, complete rounded edge. The dock itself is click-through;
+   only the centered column and its composer capture pointer events. */
+.hui-chat-pane > .hui-composer-dock {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 0 20px 18px;
+  pointer-events: none;
+}
+.hui-composer-dock > * { pointer-events: auto; }
 
 /* Each message surface bends its own backdrop. The highlights are generated
    from the lens map, and stay narrow so the glass does not glow white. */
@@ -83,7 +96,6 @@ body {
 .glass-soft {
   background: rgba(255, 255, 255, calc(0.1 * var(--hui-panel-strength, .45)));
   backdrop-filter: blur(16px) saturate(150%);
-  -webkit-backdrop-filter: blur(16px) saturate(150%);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 .hui-user-message {
@@ -127,7 +139,8 @@ body {
 .hui-transparency-range { accent-color: #8bdce8; cursor: pointer; }
 .hui-liquid-toggle { accent-color: #8bdce8; cursor: pointer; }
 
-.hui-composer { position: relative; transition: border-color 180ms ease, background-color 180ms ease; }
+.hui-composer { position: relative; background: rgba(255, 255, 255, calc(0.14 * var(--hui-panel-strength, .45))); backdrop-filter: blur(12px) saturate(160%); box-shadow: 0 14px 34px rgba(0, 0, 0, .30); transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease; }
+.hui-composer:focus-within { border-color: rgba(180, 233, 245, .32); box-shadow: 0 14px 34px rgba(0, 0, 0, .30), inset 0 1px 0 rgba(255, 255, 255, .05), 0 0 0 1px rgba(180, 233, 245, .12); }
 .hui-composer[data-dragging='true'] { border-color: rgba(139, 220, 232, .8); background: rgba(72, 178, 197, .2); }
 .hui-composer-textarea { display: block; max-height: 192px; line-height: 1.5; transition: height 120ms ease; }
 .hui-attachments { display: flex; flex-wrap: wrap; gap: 7px; padding: 2px 5px 8px; }
@@ -136,17 +149,49 @@ body {
 .hui-attachment-icon { font-size: 20px; line-height: 1; color: #9cdae6; }
 .hui-attachment button { flex: none; border-radius: 4px; padding: 0 3px; color: rgba(255,255,255,.6); font-size: 16px; }
 .hui-attachment button:hover { background: rgba(255,255,255,.12); color: #fff; }
-.hui-attach-button { flex: none; width: 27px; height: 27px; border: 1px solid rgba(255,255,255,.13); border-radius: 8px; background: rgba(255,255,255,.07); color: #c5edf5; font-size: 21px; line-height: 1; transition: background 150ms ease; }
-.hui-attach-button:hover { background: rgba(255,255,255,.16); }
-.hui-attach-button:disabled { opacity: .4; }
+.hui-attach-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+  color: rgba(214, 236, 245, .88);
+  transition: background 160ms ease, color 160ms ease, transform 120ms ease;
+}
+.hui-attach-button:hover { background: rgba(255, 255, 255, .15); color: #fff; }
+.hui-attach-button:active { transform: scale(.94); }
+.hui-attach-button:disabled { opacity: .4; cursor: not-allowed; }
+.hui-attach-button:focus-visible, .hui-picker-trigger:focus-visible { outline: 2px solid rgba(145, 219, 232, .7); outline-offset: 2px; }
 
-.hui-picker { position: relative; min-width: 0; max-width: 230px; }
-.hui-picker-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; max-width: 230px; min-width: 66px; height: 28px; padding: 0 9px; border: 1px solid rgba(255,255,255,.16); border-radius: 9px; background: rgba(255,255,255,.08); color: rgba(244,248,255,.86); font-size: 11.5px; text-align: left; transition: background 160ms ease, border-color 160ms ease; }
-.hui-picker-trigger:hover, .hui-picker[data-open='true'] .hui-picker-trigger { border-color: rgba(180,233,245,.38); background: rgba(255,255,255,.15); }
+.hui-picker { position: relative; display: flex; min-width: 0; max-width: 230px; }
+.hui-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+  color: rgba(244, 248, 255, .88);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  transition: background 160ms ease, color 160ms ease;
+}
+.hui-picker-trigger:hover, .hui-picker[data-open='true'] .hui-picker-trigger { background: rgba(255, 255, 255, .15); color: #fff; }
 .hui-picker-trigger:disabled { opacity: .4; cursor: not-allowed; }
-.hui-picker-chevron { font-size: 17px; line-height: 1; transition: transform 180ms ease; }
+.hui-picker-trigger .truncate { min-width: 0; }
+.hui-picker-chevron { flex: none; width: 12px; height: 12px; color: rgba(255, 255, 255, .48); transition: transform 200ms cubic-bezier(.2, .8, .2, 1), color 160ms ease; }
+.hui-picker-trigger:hover .hui-picker-chevron, .hui-picker[data-open='true'] .hui-picker-chevron { color: rgba(255, 255, 255, .85); }
 .hui-picker[data-open='true'] .hui-picker-chevron { transform: rotate(180deg); }
-.hui-picker-panel { position: fixed; z-index: 60; width: min(300px, calc(100vw - 110px)); max-height: min(380px, 58vh); border-radius: 15px; padding: 6px; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(8px) scale(.98); transform-origin: bottom left; transition: opacity 170ms ease, transform 190ms cubic-bezier(.2,.8,.2,1), visibility 190ms; }
+.hui-picker-panel { position: fixed; z-index: 60; width: max-content; min-width: 120px; max-width: min(300px, calc(100vw - 24px)); max-height: min(380px, 58vh); border-radius: 15px; padding: 6px; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(8px) scale(.98); transform-origin: bottom left; transition: opacity 170ms ease, transform 190ms cubic-bezier(.2,.8,.2,1), visibility 190ms; }
 .hui-picker-panel[data-open='true'] { opacity: 1; visibility: visible; pointer-events: auto; transform: translateY(0) scale(1); }
 .hui-picker-scroll { max-height: calc(min(380px, 58vh) - 12px); overflow-y: auto; overscroll-behavior: contain; }
 .hui-picker-group { padding: 11px 9px 5px; color: #9edce7; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
@@ -167,7 +212,6 @@ body {
   border-radius: 16px;
   background: rgba(16, 17, 22, .66);
   backdrop-filter: blur(20px) saturate(150%);
-  -webkit-backdrop-filter: blur(20px) saturate(150%);
   box-shadow: 0 16px 40px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .1);
   animation: hui-slash-rise 170ms cubic-bezier(.2, .8, .2, 1) both;
 }
@@ -571,7 +615,6 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: linear-gradient(135deg, rgba(255, 255, 255, calc(0.16 * var(--hui-panel-strength, .45))), rgba(255, 255, 255, calc(0.06 * var(--hui-panel-strength, .45))));
   backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 4px 12px rgba(0, 0, 0, 0.22);
   cursor: pointer;
   transition: transform 220ms cubic-bezier(.22, 1, .36, 1), border-color 180ms ease-out, box-shadow 180ms ease-out;
@@ -729,10 +772,12 @@ body {
   --tool-surface: rgba(145, 101, 215, calc(0.27 * var(--hui-panel-strength, .45)));
   --tool-border: rgba(184, 143, 244, 0.34);
 }
-/* Running tools get a glowing comet (bright core + faint wide tail) that
-   rolls along the border. Dash pattern lengths equal the measured perimeter
-   (--hui-perimeter) so it loops seamlessly; core/tail lengths and the lap
-   duration are derived from that perimeter in ToolBeam. */
+/* Running tools get a glowing comet (bright core + nested, fainter and shorter
+   tails that fade out behind it) rolling along the border. Dash pattern lengths
+   equal the measured perimeter (--hui-perimeter) so it loops seamlessly; the
+   core length (--hui-beam), total comet length (--hui-comet) and lap duration
+   are derived from that perimeter in ToolBeam. The tails are blurred as a group
+   so the fade reads as one smooth attenuation instead of stacked hard bands. */
 .hui-tool-call[data-running='true'] {
   position: relative;
   isolation: isolate;
@@ -762,20 +807,21 @@ body {
 .hui-tool-beam-core {
   stroke: color-mix(in srgb, var(--tool-accent), #ffffff 35%);
   stroke-width: 2;
-  stroke-dasharray: calc(var(--hui-beam, 140) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-beam, 140)) * 1px);
+  stroke-dasharray: calc(var(--hui-beam, 56) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-beam, 56)) * 1px);
   animation-name: hui-tool-beam-run;
 }
+.hui-tool-beam-tails { filter: blur(2px); }
 .hui-tool-beam-tail {
   stroke: var(--tool-accent);
   stroke-width: 4.5;
-  opacity: .35;
-  stroke-dasharray: calc(var(--hui-tail, 330) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-tail, 330)) * 1px);
+  opacity: .1;
+  stroke-dasharray: calc(var(--hui-tail, 100) * 1px) calc((var(--hui-perimeter, 900) - var(--hui-tail, 100)) * 1px);
   animation-name: hui-tool-beam-tail;
 }
 @keyframes hui-tool-beam-run { to { stroke-dashoffset: calc(var(--hui-perimeter, 900) * -1px); } }
 @keyframes hui-tool-beam-tail {
-  from { stroke-dashoffset: calc((var(--hui-tail, 330) - var(--hui-beam, 140)) * 1px); }
-  to { stroke-dashoffset: calc((var(--hui-tail, 330) - var(--hui-beam, 140) - var(--hui-perimeter, 900)) * 1px); }
+  from { stroke-dashoffset: calc((var(--hui-tail, 100) - var(--hui-beam, 56)) * 1px); }
+  to { stroke-dashoffset: calc((var(--hui-tail, 100) - var(--hui-beam, 56) - var(--hui-perimeter, 900)) * 1px); }
 }
 /* One-shot ring flash when a running tool finishes. */
 .hui-tool-call[data-flash='true'] { position: relative; }
@@ -866,7 +912,6 @@ body {
 .hui-message {
   width: 100%;
   backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 .hui-stream-tail {
@@ -886,6 +931,14 @@ body {
 
 /* Keep the waiting transition on one node, then let each call own its surface. */
 .hui-reply-center { display: flex; justify-content: center; }
+.hui-reply-stats {
+  margin-top: 5px;
+  padding: 0 4px;
+  color: rgba(213, 226, 239, 0.45);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
 .hui-compaction-body { padding: 12px 16px; }
 .hui-reply-bubble {
   box-sizing: border-box;

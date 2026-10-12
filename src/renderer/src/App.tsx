@@ -28,6 +28,14 @@ interface ModelOption {
   modelName: string
   contextLimit: number
   outputLimit: number
+  variants: string[]
+}
+
+// Model "variants" carry provider-specific reasoning options; show the common
+// effort names in Chinese and fall back to the raw name for anything custom.
+function variantLabel(name: string): string {
+  const known: Record<string, string> = { none: '关闭', minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高' }
+  return known[name.toLowerCase()] ?? name.charAt(0).toUpperCase() + name.slice(1)
 }
 
 interface CommandOption {
@@ -218,10 +226,13 @@ const editToolMetrics = (state: any): string | null => {
   return `新增 ${added} 行 · 移除 ${removed} 行`
 }
 
-// A glowing beam that rolls along the tool bubble border. The perimeter is
-// measured so the dash pattern tiles seamlessly; beam length scales with the
-// bubble and the lap duration grows sub-linearly, so small bubbles travel at
-// a gentler pixel speed instead of flying around their short border.
+// A glowing comet that rolls along the tool bubble border: a bright core plus a
+// stack of nested, progressively shorter faint tails that fade out behind it.
+// The perimeter is measured so the dash pattern tiles seamlessly; the core and
+// total comet lengths as well as the lap duration are derived from that
+// perimeter so the effect stays proportional on any bubble size.
+const BEAM_TAIL_STEPS = 8
+
 const ToolBeam = (): React.ReactElement => {
   const ref = useRef<SVGSVGElement>(null)
   useEffect(() => {
@@ -233,12 +244,12 @@ const ToolBeam = (): React.ReactElement => {
       const w = Math.max(2 * rx, box.width - 3)
       const h = Math.max(2 * rx, box.height - 3)
       const perimeter = 2 * (w - 2 * rx) + 2 * (h - 2 * rx) + 2 * Math.PI * rx
-      const beam = Math.min(160, Math.max(30, perimeter * 0.15))
-      const tail = Math.min(perimeter * 0.45, beam * 2.4)
-      const duration = 0.075 * Math.pow(perimeter, 0.45)
+      const beam = Math.min(64, Math.max(12, perimeter * 0.06))
+      const comet = Math.min(perimeter * 0.18, beam * 2.4)
+      const duration = 0.0375 * Math.pow(perimeter, 0.45)
       el.style.setProperty('--hui-perimeter', perimeter.toFixed(2))
       el.style.setProperty('--hui-beam', beam.toFixed(1))
-      el.style.setProperty('--hui-tail', tail.toFixed(1))
+      el.style.setProperty('--hui-comet', comet.toFixed(1))
       el.style.setProperty('--hui-beam-duration', `${duration.toFixed(2)}s`)
     }
     measure()
@@ -248,7 +259,15 @@ const ToolBeam = (): React.ReactElement => {
   }, [])
   return (
     <svg ref={ref} className="hui-tool-beam" aria-hidden="true">
-      <rect className="hui-tool-beam-tail" />
+      <g className="hui-tool-beam-tails">
+        {Array.from({ length: BEAM_TAIL_STEPS }, (_, i) => (
+          <rect
+            key={i}
+            className="hui-tool-beam-tail"
+            style={{ '--hui-tail': `calc(var(--hui-comet, 150) * ${((i + 1) / BEAM_TAIL_STEPS).toFixed(4)})` } as CSSProperties}
+          />
+        ))}
+      </g>
       <rect className="hui-tool-beam-core" />
     </svg>
   )
@@ -504,6 +523,39 @@ const recentCallCount = 3
 const isCompactionMessage = (message: MessageEntry): boolean =>
   message.info?.role === 'assistant' && message.info?.summary === true
 
+// Small caption under a finished reply turn: model used, end-to-end seconds,
+// and average decode speed (output+reasoning tokens over the assistant steps'
+// own generation time, so tool execution does not drag the rate down).
+function replyStats(user: MessageEntry | null, replies: MessageEntry[]): string | null {
+  const assistants = replies.filter(message => message.info?.role === 'assistant')
+  if (assistants.length === 0) return null
+  const ends = assistants.map(message => Number(message.info?.time?.completed))
+  if (ends.some(value => !Number.isFinite(value))) return null
+  const starts = assistants.map(message => Number(message.info?.time?.created)).filter(Number.isFinite)
+  const start = Number(user?.info?.time?.created) || Math.min(...starts)
+  const end = Math.max(...ends)
+  const seconds = (end - start) / 1000
+  if (!(seconds > 0)) return null
+  let outTokens = 0
+  let decodeMs = 0
+  for (const message of assistants) {
+    const tokens = message.info?.tokens
+    outTokens += Number(tokens?.output ?? 0) + Number(tokens?.reasoning ?? 0)
+    const created = Number(message.info?.time?.created)
+    const completed = Number(message.info?.time?.completed)
+    if (Number.isFinite(created) && Number.isFinite(completed) && completed > created) decodeMs += completed - created
+  }
+  const model = assistants
+    .map(message => message.info?.modelID)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    .at(-1)
+  if (!model && outTokens === 0) return null
+  const secondsLabel = seconds >= 10 ? `${Math.round(seconds)}s` : `${seconds.toFixed(1)}s`
+  const speed = decodeMs > 0 && outTokens > 0 ? outTokens / (decodeMs / 1000) : null
+  const speedLabel = speed === null ? null : `${speed >= 100 ? Math.round(speed) : speed.toFixed(1)} tok/s`
+  return [model, secondsLabel, speedLabel].filter(Boolean).join(' · ')
+}
+
 // Kernel-driven compaction gets one centered bubble. It mirrors the reply wait
 // lifecycle ("等待会话压缩" -> streamed summary) through ReplyPresentation, then
 // folds into a step-style card ("会话已压缩") the reader can reopen.
@@ -709,8 +761,9 @@ function GlassSelect({ value, onChange, options, title, disabled, empty }: {
     const trigger = triggerRef.current
     const place = (): void => {
       const rect = trigger.getBoundingClientRect()
-      const width = Math.min(300, window.innerWidth - 110)
-      setPanelPos({ left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)), bottom: window.innerHeight - rect.top + 10 })
+      const width = panelRef.current?.offsetWidth || 0
+      const left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - width - 12))
+      setPanelPos({ left, bottom: window.innerHeight - rect.top + 10 })
     }
     place()
     window.addEventListener('resize', place)
@@ -731,7 +784,7 @@ function GlassSelect({ value, onChange, options, title, disabled, empty }: {
         }}
         ref={triggerRef}
         className="hui-picker-trigger">
-        <span className="truncate">{options[selectedIndex]?.label ?? empty}</span><span className="hui-picker-chevron" aria-hidden="true">⌄</span>
+        <span className="truncate">{options[selectedIndex]?.label ?? empty}</span><svg className="hui-picker-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9.5l6 6 6-6" /></svg>
       </button>
       {createPortal(
         <div ref={panelRef} id={listId} role="listbox" aria-label={title} className="hui-picker-panel glass no-drag" data-open={open}
@@ -826,7 +879,21 @@ export default function App(): React.ReactElement {
   const [answeringQuestion, setAnsweringQuestion] = useState(false)
   const questionClientRef = useRef<ReturnType<typeof createQuestionClient> | null>(null)
   const questionVersion = useRef(0)
-  const [busy, setBusy] = useState(false)
+  // Track busy per session so switching to an idle session shows "发送" instead
+  // of leaking another session's "停止" state; switching back restores it.
+  const [busySessions, setBusySessions] = useState<ReadonlySet<string>>(() => new Set<string>())
+  const busy = activeId !== null && busySessions.has(activeId)
+  const markSessionBusy = useCallback((id: string | null | undefined, value: boolean): void => {
+    if (!id) return
+    setBusySessions(previous => {
+      if (value === previous.has(id)) return previous
+      const next = new Set(previous)
+      if (value) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+  const sendingRef = useRef(false)
   // Compaction is driven by the kernel, not a submitted prompt, so it gets its
   // own centered bubble instead of a user echo plus a reply turn.
   const [compactingSessionId, setCompactingSessionId] = useState<string | null>(null)
@@ -850,6 +917,7 @@ export default function App(): React.ReactElement {
 
   const [models, setModels] = useState<ModelOption[]>([])
   const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null)
+  const [selectedVariant, setSelectedVariant] = useState<string | null>(null)
   const [agents, setAgents] = useState<any[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
   const [commands, setCommands] = useState<CommandOption[]>([])
@@ -866,6 +934,7 @@ export default function App(): React.ReactElement {
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
+  const composerDockRef = useRef<HTMLDivElement | null>(null)
   const stickBottom = useRef(true)
   const userScrolling = useRef(false)
   const rangeReading = useRef(false)
@@ -917,6 +986,11 @@ export default function App(): React.ReactElement {
     }
     return Array.from(map.entries())
   }, [models])
+
+  const activeVariants = useMemo(() => {
+    if (!selectedModel) return []
+    return models.find(m => m.providerID === selectedModel.providerID && m.modelID === selectedModel.modelID)?.variants ?? []
+  }, [models, selectedModel])
 
   // Slash commands open a frosted menu while the user is still typing the
   // command name (there is no whitespace yet). Escape hides it until the next
@@ -1030,13 +1104,20 @@ export default function App(): React.ReactElement {
       const pdata = unwrap(provRes) ?? {}
       for (const p of pdata.providers ?? []) {
         for (const [mid, m] of Object.entries(p.models ?? {})) {
+          const rawVariants = (m as any)?.variants as Record<string, any> | undefined
+          const variants = rawVariants
+            ? Object.entries(rawVariants)
+                .filter(([, option]) => !(option && typeof option === 'object' && (option as any).disabled))
+                .map(([name]) => name)
+            : []
           list.push({
             providerID: p.id,
             providerName: p.name ?? p.id,
             modelID: mid,
             modelName: (m as any)?.name ?? mid,
             contextLimit: Number((m as any)?.limit?.context) || 0,
-            outputLimit: Number((m as any)?.limit?.output) || 0
+            outputLimit: Number((m as any)?.limit?.output) || 0,
+            variants
           })
         }
       }
@@ -1065,6 +1146,12 @@ export default function App(): React.ReactElement {
         chosen = { providerID: list[0].providerID, modelID: list[0].modelID }
       }
       if (valid(chosen)) setSelectedModel(chosen)
+
+      const chosenVariants = chosen
+        ? (list.find(x => x.providerID === chosen!.providerID && x.modelID === chosen!.modelID)?.variants ?? [])
+        : []
+      const savedVariant = localStorage.getItem('hui.variant')
+      setSelectedVariant(savedVariant && chosenVariants.includes(savedVariant) ? savedVariant : null)
 
       const savedAgent = localStorage.getItem('hui.agent')
       const defAgent =
@@ -1178,6 +1265,7 @@ export default function App(): React.ReactElement {
     deletedSessions.current.add(id)
     setSessions(previous => previous.filter(session => session.id !== id))
     setSessionMenu(previous => previous?.id === id ? null : previous)
+    markSessionBusy(id, false)
     if (activeIdRef.current === id) {
       clearEvents()
       turnKeys.current.clear()
@@ -1190,13 +1278,12 @@ export default function App(): React.ReactElement {
       setReverted(null)
       revertOperation.current = null
       setRevertingId(null)
-      setBusy(false)
       setLastError(null)
       stickBottom.current = true
       rangeReading.current = false
       setFollowingReply(true)
     }
-  }, [clearEvents])
+  }, [clearEvents, markSessionBusy])
 
   const deleteSession = useCallback(async (id: string) => {
     const c = clientRef.current
@@ -1262,7 +1349,7 @@ export default function App(): React.ReactElement {
     setSelectedAgent(null)
     setCommands([])
     setSlashDismissed(false)
-    setBusy(false)
+    setBusySessions(new Set<string>())
     setInput('')
     setLastError(null)
     stickBottom.current = true
@@ -1385,19 +1472,19 @@ export default function App(): React.ReactElement {
           break
         }
         case 'session.idle': {
+          if (p.sessionID) markSessionBusy(p.sessionID, false)
           if (active && p.sessionID === active) {
             flushEvents()
-            setBusy(false)
             refreshMessages()
           }
           break
         }
         case 'session.error': {
+          if (p.sessionID) markSessionBusy(p.sessionID, false)
           if (active && p.sessionID === active) {
             const message =
               p?.error?.data?.message ?? p?.error?.message ?? p?.error?.name ?? '未知错误'
             setLastError(String(message))
-            setBusy(false)
           }
           break
         }
@@ -1434,7 +1521,8 @@ export default function App(): React.ReactElement {
     forgetSession,
     resetWorkspaceView,
     receivePermission,
-    reloadPermissions
+    reloadPermissions,
+    markSessionBusy
   ])
 
   useEffect(() => {
@@ -1450,6 +1538,22 @@ export default function App(): React.ReactElement {
     observer.observe(content)
     return () => {
       observer.disconnect()
+    }
+  }, [])
+
+  // The composer floats above the conversation, so reserve matching bottom
+  // space in the scroll area; otherwise the last message stays hidden behind it.
+  useEffect(() => {
+    const el = scrollRef.current
+    const dock = composerDockRef.current
+    if (!el || !dock) return
+    const apply = (): void => { el.style.paddingBottom = `${Math.round(dock.getBoundingClientRect().height) + 20}px` }
+    const observer = new ResizeObserver(apply)
+    observer.observe(dock)
+    apply()
+    return () => {
+      observer.disconnect()
+      el.style.removeProperty('padding-bottom')
     }
   }, [])
 
@@ -1505,6 +1609,13 @@ export default function App(): React.ReactElement {
     if (selectedAgent) localStorage.setItem('hui.agent', selectedAgent)
   }, [selectedAgent])
 
+  useEffect(() => {
+    try {
+      if (selectedVariant) localStorage.setItem('hui.variant', selectedVariant)
+      else localStorage.removeItem('hui.variant')
+    } catch { /* Preference only. */ }
+  }, [selectedVariant])
+
   const newSession = async (): Promise<void> => {
     const c = clientRef.current
     if (!c) return
@@ -1522,7 +1633,7 @@ export default function App(): React.ReactElement {
   const send = async (): Promise<void> => {
     const text = input.trim()
     const c = clientRef.current
-    if ((!text && attachments.length === 0) || !c || !server?.url || busy) return
+    if ((!text && attachments.length === 0) || !c || !server?.url || busy || sendingRef.current) return
 
     // A leading slash runs a configured command instead of a plain prompt.
     const commandMatch = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
@@ -1540,10 +1651,13 @@ export default function App(): React.ReactElement {
     ] }
     if (selectedModel) body.model = selectedModel
     if (selectedAgent) body.agent = selectedAgent
+    if (selectedVariant) body.variant = selectedVariant
 
     beforeRequestUserId.current = [...visibleMessages].reverse().find((message) => message.info?.role === 'user')?.info?.id ?? null
     pendingTurnKey.current = `reply-request-${++turnKeySequence.current}`
-    setBusy(true)
+    const requestId = activeIdRef.current
+    markSessionBusy(requestId, true)
+    sendingRef.current = true
     setLastError(null)
     stickBottom.current = true
     rangeReading.current = false
@@ -1560,14 +1674,15 @@ export default function App(): React.ReactElement {
           clearEvents()
           setActiveId(id)
           activeIdRef.current = id
+          markSessionBusy(id, true)
           setMessages([])
           await loadSessions()
         }
       }
       if (c !== clientRef.current) return
-      if (!id) { setBusy(false); return }
+      if (!id) { markSessionBusy(requestId, false); return }
       if (command) {
-        await c.session.command({ path: { id }, body: { command: command.name, arguments: commandMatch?.[2] ?? '' }, throwOnError: true })
+        await c.session.command({ path: { id }, body: { command: command.name, arguments: commandMatch?.[2] ?? '', ...(selectedVariant ? { variant: selectedVariant } : {}) }, throwOnError: true })
       } else {
         await c.session.promptAsync({ path: { id }, body, throwOnError: true })
       }
@@ -1579,7 +1694,9 @@ export default function App(): React.ReactElement {
     } catch (e) {
       if (c !== clientRef.current) return
       setLastError(`发送失败：${e instanceof Error ? e.message : String(e)}`)
-      setBusy(false)
+      markSessionBusy(requestId, false)
+    } finally {
+      sendingRef.current = false
     }
   }
 
@@ -1624,7 +1741,7 @@ export default function App(): React.ReactElement {
       clearEvents()
       setMessages(snapshot)
       setReverted(next)
-      setBusy(false)
+      markSessionBusy(sessionId, false)
       pendingTurnKey.current = null
       await loadSessions()
     } catch (error) {
@@ -1715,6 +1832,7 @@ export default function App(): React.ReactElement {
   // different parent would remount its Worker-rendered Markdown on every send.
   const conversation: React.ReactNode[] = []
   let turnReplies: MessageEntry[] = []
+  let turnUser: MessageEntry | null = null
   let turnKey = 'reply-initial'
   const appendReply = (waiting: boolean): void => {
     const visible = turnReplies.some((message) => message.parts.some(hasVisiblePart))
@@ -1733,6 +1851,8 @@ export default function App(): React.ReactElement {
         {(visibleChars) => <StepList groups={groups} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} onExpandRange={() => { rangeReading.current = true; stickBottom.current = false; setFollowingReply(false) }} />}
       </ReplyPresentation>
     )
+    const stats = waiting ? null : replyStats(turnUser, replies)
+    if (stats) conversation.push(<div key={`${turnKey}-stats`} className="hui-reply-stats">{stats}</div>)
   }
   const compactingActive = compactingSessionId !== null && compactingSessionId === activeId
   const compactionArrived = visibleMessages.some(message => isCompactionMessage(message) && !compactionKnownIds.current.has(message.info?.id))
@@ -1742,6 +1862,7 @@ export default function App(): React.ReactElement {
       conversation.push(<MessageView key={message.info?.id ?? `user-${index}`} msg={message} liquidGlass={liquidGlass} onCopyError={setLastError} onRevert={revertMessage} reverting={revertingId === message.info?.id} revertDisabled={revertingId !== null} />)
       turnKey = turnKeys.current.get(message.info?.id) ?? `reply-${message.info?.id ?? index}`
       turnReplies = []
+      turnUser = message
     } else if (isCompactionMessage(message)) {
       // Close the current turn so the centered compaction card stands alone,
       // then advance the turn key so a following reply turn cannot reuse it.
@@ -1749,6 +1870,7 @@ export default function App(): React.ReactElement {
       conversation.push(<CompactionBlock key={message.info?.id ?? `compaction-${index}`} msg={message} liquidGlass={liquidGlass} />)
       turnKey = `reply-${message.info?.id ?? index}`
       turnReplies = []
+      turnUser = null
     } else {
       turnReplies.push(message)
     }
@@ -1776,7 +1898,7 @@ export default function App(): React.ReactElement {
     if (!c || !sessionId) { setLastError('请先开始一段对话再使用该命令'); return }
     if (name === 'compact') {
       if (!selectedModel) { setLastError('请先选择模型再压缩上下文'); return }
-      setBusy(true)
+      markSessionBusy(sessionId, true)
       setCompactingSessionId(sessionId)
       compactionKnownIds.current = new Set(visibleMessages.filter(isCompactionMessage).map(message => message.info?.id).filter((id): id is string => !!id))
       try {
@@ -1785,7 +1907,7 @@ export default function App(): React.ReactElement {
       } catch (error) {
         if (c === clientRef.current) setLastError(`压缩失败：${error instanceof Error ? error.message : String(error)}`)
       } finally {
-        if (c === clientRef.current) setBusy(false)
+        if (c === clientRef.current) markSessionBusy(sessionId, false)
         setCompactingSessionId(current => current === sessionId ? null : current)
       }
       return
@@ -2058,7 +2180,8 @@ export default function App(): React.ReactElement {
             </div>
           </div>
 
-          <div className="shrink-0 p-3 pt-0">
+          <div ref={composerDockRef} className="hui-composer-dock">
+            <div className="mx-auto w-full max-w-[684px]">
             {reverted?.sessionId === activeId && reverted.restoreAvailable ? (
               <div className="hui-revert-notice mb-2 flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-[12px]" role="status">
                 <span>已撤回 {reverted.rounds} 轮对话及相关工作区改动</span>
@@ -2077,7 +2200,7 @@ export default function App(): React.ReactElement {
               </div>
             ) : null}
             <div className="relative">
-            <div className="hui-composer glass-soft rounded-2xl p-2" data-dragging={draggingFiles}
+            <div className="hui-composer glass-soft rounded-[20px] p-2" data-dragging={draggingFiles}
               onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDraggingFiles(true) } }}
               onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }}
               onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDraggingFiles(false) }}
@@ -2118,26 +2241,32 @@ export default function App(): React.ReactElement {
                     : '等待 opencode 启动…'
                 }
                 disabled={server?.status !== 'ready' || !workspace}
-                className="hui-composer-textarea min-h-[32px] w-full resize-none bg-transparent px-3 py-1.5 text-[13.5px] text-white/90 outline-none placeholder:text-white/35 disabled:opacity-50"
+                className="hui-composer-textarea min-h-[64px] w-full resize-none bg-transparent px-3 py-1.5 text-[13.5px] text-white/90 outline-none placeholder:text-white/35 disabled:opacity-50"
               />
-              <div className="mt-1 flex items-center gap-2 px-1">
+              <div className="mt-1 flex items-center gap-2 px-0.5">
                 <input ref={fileInputRef} type="file" multiple className="hidden" onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
-                <button type="button" title="添加图片或文件" aria-label="添加图片或文件" disabled={server?.status !== 'ready' || !workspace} onClick={() => fileInputRef.current?.click()} className="hui-attach-button">＋</button>
+                <button type="button" title="添加图片或文件" aria-label="添加图片或文件" disabled={server?.status !== 'ready' || !workspace} onClick={() => fileInputRef.current?.click()} className="hui-attach-button">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                  </svg>
+                </button>
                 <GlassSelect
                   value={selectedAgent ?? ''}
                   onChange={setSelectedAgent}
                   title="Agent"
                   disabled={agents.length === 0 || server?.status !== 'ready'}
                   empty="agent…"
-                  options={agents.map(agent => ({ value: agent.name, label: agent.name }))}
+                  options={agents.map(agent => ({ value: agent.name, label: agent.name.charAt(0).toUpperCase() + agent.name.slice(1) }))}
                 />
 
                 <GlassSelect
                   value={selectedModel ? `${selectedModel.providerID}/${selectedModel.modelID}` : ''}
                   onChange={(v) => {
                     const idx = v.indexOf('/')
-                    if (idx > 0)
+                    if (idx > 0) {
                       setSelectedModel({ providerID: v.slice(0, idx), modelID: v.slice(idx + 1) })
+                      setSelectedVariant(null)
+                    }
                   }}
                   title="模型"
                   disabled={models.length === 0 || server?.status !== 'ready'}
@@ -2145,12 +2274,21 @@ export default function App(): React.ReactElement {
                   options={modelGroups.flatMap(([, items]) => items.map(model => ({ value: `${model.providerID}/${model.modelID}`, label: model.modelName, group: model.providerName })))}
                 />
 
+                <GlassSelect
+                  value={selectedVariant ?? ''}
+                  onChange={(v) => setSelectedVariant(v || null)}
+                  title="思考等级"
+                  disabled={activeVariants.length === 0 || server?.status !== 'ready'}
+                  empty="默认"
+                  options={[{ value: '', label: '默认' }, ...activeVariants.map(name => ({ value: name, label: variantLabel(name) }))]}
+                />
+
                 <div className="flex-1" />
 
                 {busy ? (
                   <button
                     onClick={() => void abort()}
-                    className="rounded-xl border border-white/15 bg-white/8 px-4 py-2 text-[13px] font-medium text-white/80 transition hover:bg-white/14"
+                    className="flex h-[30px] items-center rounded-[10px] border border-white/15 bg-white/8 px-4 text-[13px] font-medium text-white/80 transition hover:bg-white/14 active:scale-[.97]"
                   >
                     停止
                   </button>
@@ -2158,7 +2296,7 @@ export default function App(): React.ReactElement {
                   <button
                     onClick={() => void submit()}
                     disabled={(!input.trim() && attachments.length === 0) || server?.status !== 'ready' || !workspace}
-                    className="rounded-xl bg-white/90 px-4 py-2 text-[13px] font-semibold text-slate-900 transition hover:bg-white disabled:opacity-40"
+                    className="flex h-[30px] items-center rounded-[10px] bg-white/90 px-4 text-[13px] font-semibold text-slate-900 transition hover:bg-white active:scale-[.97] disabled:opacity-40"
                   >
                     发送
                   </button>
@@ -2187,6 +2325,7 @@ export default function App(): React.ReactElement {
                 </div>
               </div>
             ) : null}
+            </div>
             </div>
           </div>
           {permissionDialog ?? (questions[0] && questions[0].sessionID === activeId ? <QuestionDialog key={questions[0].id} request={questions[0]} busy={answeringQuestion} onReply={answers => void resolveQuestion(questions[0], answers)} onReject={() => void resolveQuestion(questions[0])} /> : null)}
