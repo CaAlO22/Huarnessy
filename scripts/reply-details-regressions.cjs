@@ -44,11 +44,18 @@ module.exports = async () => {
   await wait(170)
   check(trigger.getAttribute('aria-expanded') === 'true', 'deliberate hover opens details')
   const openingWidths = []
+  const cornerErrors = []
   for (let frame = 0; frame < 20; frame++) {
     await new Promise(resolve => requestAnimationFrame(resolve))
-    openingWidths.push(panel.getBoundingClientRect().width)
+    const bounds = panel.getBoundingClientRect()
+    openingWidths.push(bounds.width)
+    const radius = parseFloat(getComputedStyle(panel).borderBottomRightRadius)
+    const anchor = trigger.getBoundingClientRect()
+    cornerErrors.push(Math.max(Math.abs(radius - 14), Math.abs(bounds.right - radius - (anchor.left + anchor.width / 2)), Math.abs(bounds.bottom - radius - (anchor.top + anchor.height / 2))))
   }
   check(openingWidths.every((width, index) => width <= 320.5 && (!index || width >= openingWidths[index - 1] - .5)), 'glass grows monotonically from the circle without overshoot or end rebound')
+  check(cornerErrors.every(error => error < 1), 'the icon corner retains its original curvature and concentric center throughout expansion')
+  await Promise.all(panel.getAnimations().map(animation => animation.finished))
   check(getComputedStyle(panel).transform === 'none' && getComputedStyle(panel.querySelector('.hui-reply-details-body')).transform === 'none', 'shape expansion never stretches the text')
   panel.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
   trigger.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: panel }))
@@ -63,7 +70,7 @@ module.exports = async () => {
   panel.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: document.body }))
   await wait(140)
   check(trigger.getAttribute('aria-expanded') === 'false', 'leaving an unpinned panel starts closing without requiring a click')
-  await wait(180)
+  await wait(400)
   trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
   await wait(180)
   trigger.click()
@@ -77,7 +84,7 @@ module.exports = async () => {
   await wait(45)
   const closingWidth = panel.getBoundingClientRect().width
   check(panel.dataset.visible === 'true' && closingWidth > trigger.offsetWidth && closingWidth < 320, 'closing continuously reduces the same glass toward the original circle')
-  await wait(170)
+  await wait(400)
   check(panel.dataset.visible === 'false' && getComputedStyle(panel).visibility === 'hidden', 'closing finishes and releases the hidden surface')
   trigger.blur()
   trigger.focus({ preventScroll: true })

@@ -102,20 +102,23 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
       const left = Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))
       // The panel includes the circle, so there is no gap or separate popup.
       const top = Math.max(12, Math.min(below ? anchor.top : anchor.bottom - height, window.innerHeight - height - 12))
-      target = { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`, borderRadius: '18px' }
+      // The icon's corner keeps the circle's 14px radius and center, while
+      // the other corners soften into the card. Never interpolate that corner.
+      target = { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`,
+        borderRadius: below ? '18px 14px 18px 18px' : '18px 18px 14px 18px' }
       surface.dataset.below = String(below)
       surface.dataset.visible = 'true'
       button.dataset.surface = 'expanded'
     }
     const animation = surface.animate([wasVisible ? from : circle, target], {
-      duration: reduced ? 0 : open ? 280 : 220,
-      easing: 'cubic-bezier(.2,.7,.25,1)', fill: 'both'
+      duration: reduced ? 0 : open ? 520 : 380,
+      easing: 'cubic-bezier(.3,0,.15,1)', fill: 'both'
     })
     // Let the glass open before revealing its contents; keep the info glyph
     // attached to the original circle throughout both directions.
     contentMotion.current = body.animate([
       { opacity: wasVisible ? textOpacity : 0 }, { opacity: open ? 1 : 0 }
-    ], { duration: reduced ? 0 : open ? 160 : 80, delay: reduced || !open || wasVisible ? 0 : 70, fill: 'both', easing: 'ease-out' })
+    ], { duration: reduced ? 0 : open ? 220 : 100, delay: reduced || !open || wasVisible ? 0 : 150, fill: 'both', easing: 'ease-out' })
     motion.current = animation
     void animation.finished.then(() => {
       if (!open && motion.current === animation) {
