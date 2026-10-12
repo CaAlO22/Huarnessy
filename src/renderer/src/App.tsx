@@ -157,7 +157,7 @@ const readBackgroundMode = (): BackgroundMode => {
     const saved = localStorage.getItem('hui.backgroundMode')
     if (saved === 'solid' || saved === 'subtle' || saved === 'color') return saved
   } catch { /* Keep the default when local storage is unavailable. */ }
-  return 'color'
+  return 'subtle'
 }
 const readChatFontSize = (): number => {
   try {
@@ -178,7 +178,7 @@ const readPanelTransparency = (): number => {
 }
 
 const readLiquidGlass = (): boolean => {
-  try { return localStorage.getItem('hui.liquidGlass') !== 'false' } catch { return true }
+  try { return localStorage.getItem('hui.liquidGlass') === 'true' } catch { return false }
 }
 const plainGlassFilter: CSSProperties = {
   backdropFilter: 'blur(22px) saturate(160%)',
