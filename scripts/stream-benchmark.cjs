@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const { join } = require('node:path')
 const workspaceRegressions = require('./workspace-regressions.cjs')
 const replyUIRegressions = require('./reply-ui-regressions.cjs')
+const replyDetailsRegressions = require('./reply-details-regressions.cjs')
 const stepRangeRegressions = require('./step-range-regressions.cjs')
 const messageActionsRegressions = require('./message-actions-regressions.cjs')
 const composerRegressions = require('./composer-regressions.cjs')
@@ -301,6 +302,7 @@ app.whenReady().then(async () => {
       return
     }
     if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ replyUI: await window.webContents.executeJavaScript(`(${replyUIRegressions.toString()})()`) }))
+    if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ replyDetails: await window.webContents.executeJavaScript(`(${replyDetailsRegressions.toString()})()`) }))
     if (!process.env.BENCH_LAYOUT_ONLY) console.log(JSON.stringify({ stepRanges: await window.webContents.executeJavaScript(`(${stepRangeRegressions.toString()})(${Boolean(process.env.BENCH_SCREENSHOT)})`) }))
     if (process.env.BENCH_SCREENSHOT) {
       await window.webContents.executeJavaScript(`(() => {

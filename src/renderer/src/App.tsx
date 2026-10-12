@@ -8,6 +8,7 @@ import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
 import { sameWorkspace } from './workspace-path'
 import { ReplyPresentation, hasVisiblePart } from './ReplyPresentation'
+import { ReplyDetails, replyMetrics, type ReplyMetrics } from './ReplyDetails'
 import { useLiquidGlassSurface } from './LiquidGlass'
 import { MottledBackground } from './MottledBackground'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
@@ -433,8 +434,9 @@ const MessageView = memo(function MessageView({ msg, inReply = false, visibleCha
 // glides the scroll position so that motion reads as a smooth scroll instead.
 const CollapseScrollContext = createContext<((card: HTMLElement | null) => void) | null>(null)
 
-const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visibleChars, liquidGlass }: {
+const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visibleChars, liquidGlass, metrics }: {
   messages: MessageEntry[]
+  metrics?: ReplyMetrics | null
   order: number
   foldedByNext: boolean
   visibleChars?: number
@@ -499,6 +501,7 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
           <MessageView msg={msg} inReply visibleChars={visibleChars} />
         </div>
       </div>
+      {metrics && !foldedByNext ? <ReplyDetails metrics={metrics} /> : null}
       {foldedByNext && expanded ? (
         <div className="hui-call-foot">
           <button className="hui-call-collapse" type="button" aria-label="收起步骤" title="收起" onClick={collapse}>
@@ -512,6 +515,10 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
   && previous.foldedByNext === next.foldedByNext
   && previous.visibleChars === next.visibleChars
   && previous.liquidGlass === next.liquidGlass
+  && (previous.metrics === next.metrics || (!!previous.metrics && !!next.metrics
+    && previous.metrics.model === next.metrics.model && previous.metrics.provider === next.metrics.provider
+    && previous.metrics.seconds === next.metrics.seconds && previous.metrics.speed === next.metrics.speed
+    && previous.metrics.tokens === next.metrics.tokens))
   && previous.messages.length === next.messages.length
   && previous.messages.every((message, index) => message === next.messages[index]))
 
@@ -522,39 +529,6 @@ const recentCallCount = 3
 // echo, so it must not join a normal reply turn.
 const isCompactionMessage = (message: MessageEntry): boolean =>
   message.info?.role === 'assistant' && message.info?.summary === true
-
-// Small caption under a finished reply turn: model used, end-to-end seconds,
-// and average decode speed (output+reasoning tokens over the assistant steps'
-// own generation time, so tool execution does not drag the rate down).
-function replyStats(user: MessageEntry | null, replies: MessageEntry[]): string | null {
-  const assistants = replies.filter(message => message.info?.role === 'assistant')
-  if (assistants.length === 0) return null
-  const ends = assistants.map(message => Number(message.info?.time?.completed))
-  if (ends.some(value => !Number.isFinite(value))) return null
-  const starts = assistants.map(message => Number(message.info?.time?.created)).filter(Number.isFinite)
-  const start = Number(user?.info?.time?.created) || Math.min(...starts)
-  const end = Math.max(...ends)
-  const seconds = (end - start) / 1000
-  if (!(seconds > 0)) return null
-  let outTokens = 0
-  let decodeMs = 0
-  for (const message of assistants) {
-    const tokens = message.info?.tokens
-    outTokens += Number(tokens?.output ?? 0) + Number(tokens?.reasoning ?? 0)
-    const created = Number(message.info?.time?.created)
-    const completed = Number(message.info?.time?.completed)
-    if (Number.isFinite(created) && Number.isFinite(completed) && completed > created) decodeMs += completed - created
-  }
-  const model = assistants
-    .map(message => message.info?.modelID)
-    .filter((id): id is string => typeof id === 'string' && id.length > 0)
-    .at(-1)
-  if (!model && outTokens === 0) return null
-  const secondsLabel = seconds >= 10 ? `${Math.round(seconds)}s` : `${seconds.toFixed(1)}s`
-  const speed = decodeMs > 0 && outTokens > 0 ? outTokens / (decodeMs / 1000) : null
-  const speedLabel = speed === null ? null : `${speed >= 100 ? Math.round(speed) : speed.toFixed(1)} tok/s`
-  return [model, secondsLabel, speedLabel].filter(Boolean).join(' · ')
-}
 
 // Kernel-driven compaction gets one centered bubble. It mirrors the reply wait
 // lifecycle ("等待会话压缩" -> streamed summary) through ReplyPresentation, then
@@ -701,8 +675,9 @@ function StepRange({ groups, start, liquidGlass, onExpand }: {
   )
 }
 
-function StepList({ groups, visibleChars, liquidGlass, canCompact, onExpandRange }: {
+function StepList({ groups, visibleChars, liquidGlass, canCompact, onExpandRange, metrics }: {
   groups: MessageEntry[][]
+  metrics?: ReplyMetrics | null
   visibleChars?: number
   liquidGlass: boolean
   canCompact: boolean
@@ -722,7 +697,7 @@ function StepList({ groups, visibleChars, liquidGlass, canCompact, onExpandRange
   }
   for (let index = compacted; index < groups.length; index++) {
     const messages = groups[index]
-    items.push(<CallBlock key={messages[0].info?.id ?? index} messages={messages} order={index + 1} foldedByNext={index < groups.length - 1} visibleChars={index === groups.length - 1 ? visibleChars : undefined} liquidGlass={liquidGlass} />)
+    items.push(<CallBlock key={messages[0].info?.id ?? index} messages={messages} order={index + 1} foldedByNext={index < groups.length - 1} metrics={index === groups.length - 1 ? metrics : null} visibleChars={index === groups.length - 1 ? visibleChars : undefined} liquidGlass={liquidGlass} />)
   }
   return <>{items}</>
 }
@@ -1846,13 +1821,12 @@ export default function App(): React.ReactElement {
     }
     const textLength = groups.at(-1)?.flatMap(group => group.parts).reduce((count, part) =>
       count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
+    const metrics = waiting ? null : replyMetrics(turnUser, turnReplies)
     conversation.push(
       <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength} liquidGlass={liquidGlass}>
-        {(visibleChars) => <StepList groups={groups} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} onExpandRange={() => { rangeReading.current = true; stickBottom.current = false; setFollowingReply(false) }} />}
+        {(visibleChars) => <StepList groups={groups} metrics={metrics} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} onExpandRange={() => { rangeReading.current = true; stickBottom.current = false; setFollowingReply(false) }} />}
       </ReplyPresentation>
     )
-    const stats = waiting ? null : replyStats(turnUser, replies)
-    if (stats) conversation.push(<div key={`${turnKey}-stats`} className="hui-reply-stats">{stats}</div>)
   }
   const compactingActive = compactingSessionId !== null && compactingSessionId === activeId
   const compactionArrived = visibleMessages.some(message => isCompactionMessage(message) && !compactionKnownIds.current.has(message.info?.id))
