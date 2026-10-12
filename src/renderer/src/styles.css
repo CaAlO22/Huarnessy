@@ -940,23 +940,35 @@ body {
 .hui-reply-details { display: flex; justify-content: flex-end; padding: 0 8px 6px; margin-top: -4px; }
 .hui-reply-info {
   display: grid; place-items: center; width: 28px; height: 28px;
-  border: 0; border-radius: 50%; background: transparent;
-  color: rgba(220, 228, 238, .48); cursor: pointer;
+  box-sizing: border-box; border: 1px solid rgba(255,255,255,.14); border-radius: 50%;
+  background: linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.015)), rgba(24,26,30,.46);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.1), 0 2px 8px rgba(0,0,0,.14);
+  color: rgba(220, 228, 238, .65); cursor: pointer;
   transition: color 160ms ease, background 160ms ease;
 }
 .hui-call-block:hover .hui-reply-info { color: rgba(220, 228, 238, .72); }
-.hui-reply-info:hover, .hui-reply-info[aria-expanded='true'] { color: #eef2f7; background: rgba(255,255,255,.07); }
+.hui-reply-info:hover, .hui-reply-info[aria-expanded='true'] { color: #eef2f7; }
+.hui-reply-info[data-surface='expanded'] { opacity: 0; }
 .hui-reply-info:focus-visible { outline: 2px solid #9cc9ef; outline-offset: 2px; }
 .hui-reply-details-panel {
   position: fixed; z-index: 1000; box-sizing: border-box;
-  width: 320px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow: auto;
-  padding: 18px; border-radius: 18px; border: 1px solid rgba(255,255,255,.14);
+  width: 320px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow: hidden;
+  padding: 0; border-radius: 18px; border: 1px solid rgba(255,255,255,.14);
   background: linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.015)), rgba(24,26,30,.46); color: #eef1f6;
   box-shadow: 0 10px 32px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.1);
-  opacity: 0; visibility: hidden; pointer-events: none;
+  visibility: hidden; pointer-events: none;
 }
 .hui-reply-details-panel[data-visible='true'] { visibility: visible; }
 .hui-reply-details-panel[data-open='true'] { pointer-events: auto; }
+.hui-reply-details-body { box-sizing: border-box; width: 318px; padding: 18px 18px 38px; opacity: 0; max-height: calc(100vh - 26px); overflow-y: auto; }
+.hui-reply-details-anchor {
+  position: absolute; bottom: -1px; right: -1px; display: grid; place-items: center;
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: #dce4ee; cursor: pointer;
+}
+.hui-reply-details-panel[data-below='true'] .hui-reply-details-anchor { top: -1px; bottom: auto; }
+.hui-reply-details-panel[data-below='true'] .hui-reply-details-body { padding-top: 38px; padding-bottom: 18px; }
+.hui-reply-details-anchor:focus-visible { outline: 2px solid #9cc9ef; outline-offset: -3px; }
 .hui-reply-details-panel h3 { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
 .hui-reply-details-panel dl { margin: 0; font-size: 12px; line-height: 1.6; }
 .hui-reply-details-panel dl > div { display: grid; grid-template-columns: 112px minmax(0,1fr); gap: 12px; padding: 5px 0; }

@@ -51,10 +51,12 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
+  const content = useRef<HTMLDivElement>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pinned = useRef(false)
   const [open, setOpen] = useState(false)
   const motion = useRef<Animation | null>(null)
+  const contentMotion = useRef<Animation | null>(null)
   const cancel = (): void => { if (timer.current !== null) clearTimeout(timer.current); timer.current = null }
   const close = (): void => { cancel(); pinned.current = false; setOpen(false) }
   const enter = (): void => { cancel(); timer.current = setTimeout(() => setOpen(true), 120) }
@@ -67,49 +69,58 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
     }, 100)
   }
   useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current) }, [])
-  useEffect(() => () => motion.current?.cancel(), [])
+  useEffect(() => () => { motion.current?.cancel(); contentMotion.current?.cancel() }, [])
   useLayoutEffect(() => {
     const surface = panel.current
+    const body = content.current
     const button = trigger.current
-    if (!surface || !button) return
+    if (!surface || !body || !button) return
     if (!open && surface.dataset.visible !== 'true') return
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const wasVisible = surface.dataset.visible === 'true'
-    // Read the current animated frame before cancelling. A quick reversal
-    // continues here rather than jumping to an opening/closing CSS endpoint.
+    const anchor = button.getBoundingClientRect()
+    // The same glass changes its actual bounds; text is never scaled. Capture
+    // the current frame so reversing mid-flight does not reset the geometry.
     const current = getComputedStyle(surface)
-    const fromTransform = current.transform
-    const fromOpacity = current.opacity
+    const from = {
+      left: current.left, top: current.top, width: current.width,
+      height: current.height, borderRadius: current.borderRadius
+    }
+    const textOpacity = getComputedStyle(body).opacity
     motion.current?.cancel()
+    contentMotion.current?.cancel()
+    const circle = {
+      left: `${anchor.left}px`, top: `${anchor.top}px`,
+      width: `${anchor.width}px`, height: `${anchor.height}px`, borderRadius: '14px'
+    }
+    let target = circle
     if (open) {
-      const anchor = button.getBoundingClientRect()
-      const width = surface.offsetWidth
-      const height = surface.offsetHeight
-      const below = anchor.top < height + 20
+      const width = Math.min(320, window.innerWidth - 24)
+      body.style.width = `${width - 2}px`
+      const height = Math.min(body.offsetHeight + 2, window.innerHeight - 24)
+      const below = anchor.bottom < height + 12
       const left = Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))
-      const top = Math.max(12, Math.min(below ? anchor.bottom + 8 : anchor.top - height - 8, window.innerHeight - height - 12))
-      surface.style.left = `${left}px`
-      surface.style.top = `${top}px`
-      surface.style.transformOrigin = `${anchor.left + anchor.width / 2 - left}px ${anchor.top + anchor.height / 2 - top}px`
+      // The panel includes the circle, so there is no gap or separate popup.
+      const top = Math.max(12, Math.min(below ? anchor.top : anchor.bottom - height, window.innerHeight - height - 12))
+      target = { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`, borderRadius: '18px' }
       surface.dataset.below = String(below)
       surface.dataset.visible = 'true'
+      button.dataset.surface = 'expanded'
     }
-    const shift = surface.dataset.below === 'true' ? -6 : 6
-    const tucked = `translateY(${shift}px) scale(.96, .92)`
-    const frames = open ? [
-      { transform: wasVisible ? fromTransform : tucked, opacity: wasVisible ? fromOpacity : 0, offset: 0, easing: 'cubic-bezier(.18,.75,.25,1)' },
-      { transform: 'translateY(0) scale(1.006, 1.01)', opacity: 1, offset: .72, easing: 'cubic-bezier(.3,0,.3,1)' },
-      { transform: 'translateY(0) scale(1)', opacity: 1, offset: 1 }
-    ] : [
-      { transform: fromTransform, opacity: fromOpacity, easing: 'cubic-bezier(.2,.65,.3,1)' },
-      { transform: tucked, opacity: 0 }
-    ]
-    const animation = surface.animate(reduced ? [{ opacity: open ? 1 : 0, transform: 'none' }] : frames,
-      { duration: reduced ? 0 : open ? 300 : 150, fill: 'both' })
+    const animation = surface.animate([wasVisible ? from : circle, target], {
+      duration: reduced ? 0 : open ? 280 : 220,
+      easing: 'cubic-bezier(.2,.7,.25,1)', fill: 'both'
+    })
+    // Let the glass open before revealing its contents; keep the info glyph
+    // attached to the original circle throughout both directions.
+    contentMotion.current = body.animate([
+      { opacity: wasVisible ? textOpacity : 0 }, { opacity: open ? 1 : 0 }
+    ], { duration: reduced ? 0 : open ? 160 : 80, delay: reduced || !open || wasVisible ? 0 : 70, fill: 'both', easing: 'ease-out' })
     motion.current = animation
     void animation.finished.then(() => {
       if (!open && motion.current === animation) {
         surface.dataset.visible = 'false'
+        delete button.dataset.surface
         animation.cancel()
       }
     }, () => { /* Reopening or unmounting cancels the previous animation. */ })
@@ -142,6 +153,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
   }, [open])
   return <div className="hui-reply-details">
     <button ref={trigger} type="button" className="hui-reply-info" aria-label="查看生成详情"
+      style={{ backdropFilter: 'blur(12px) saturate(125%)' }}
       aria-expanded={open} aria-controls={id} aria-haspopup="dialog"
       onPointerEnter={enter} onPointerLeave={leave}
       onFocus={() => { cancel(); setOpen(true) }} onBlur={leave}
@@ -156,6 +168,7 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
       aria-hidden={!open} inert={!open} data-open={open}
       style={{ backdropFilter: 'blur(12px) saturate(125%)' }}
       onPointerEnter={cancel} onPointerLeave={leave} onFocus={cancel} onBlur={leave}>
+      <div ref={content} className="hui-reply-details-body">
       <h3>生成详情</h3>
       <dl>
         <div><dt>模型</dt><dd>{metrics.model}</dd></div>
@@ -165,6 +178,16 @@ export function ReplyDetails({ metrics }: { metrics: ReplyMetrics }): React.Reac
         <div><dt>输出速度（估算）</dt><dd>{metrics.speed === null ? '未提供' : `${metrics.speed.toFixed(1)} token/秒`}</dd></div>
         <div><dt>输出及思考 token</dt><dd>{metrics.tokens === null ? '未提供' : metrics.tokens.toLocaleString()}</dd></div>
       </dl>
+      </div>
+      <button type="button" className="hui-reply-details-anchor" aria-label="固定或收起生成详情"
+        onPointerEnter={cancel} onPointerLeave={leave}
+        onClick={() => { cancel(); if (pinned.current) close(); else pinned.current = true }}>
+        <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <circle cx="10" cy="10" r="7.5" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M10 9v5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          <circle cx="10" cy="6.2" r=".9" fill="currentColor" />
+        </svg>
+      </button>
     </div>, document.body)}
   </div>
 }

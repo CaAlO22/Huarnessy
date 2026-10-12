@@ -37,11 +37,19 @@ module.exports = async () => {
   check(!!trigger && !document.querySelector('.hui-reply-stats'), 'final bubble owns the info button without a persistent caption')
   const panel = document.getElementById(trigger.getAttribute('aria-controls'))
   check(panel.parentElement === document.body && panel.getAttribute('aria-hidden') === 'true', 'details start hidden and escape bubble clipping through a portal')
+  check(getComputedStyle(trigger).backgroundImage !== 'none' && getComputedStyle(trigger).backdropFilter.includes('blur'), 'the collapsed info glyph rests on a circular glass surface')
   trigger.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
   await wait(80)
   check(trigger.getAttribute('aria-expanded') === 'false', 'brief pointer pass does not open details')
   await wait(170)
   check(trigger.getAttribute('aria-expanded') === 'true', 'deliberate hover opens details')
+  const openingWidths = []
+  for (let frame = 0; frame < 20; frame++) {
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    openingWidths.push(panel.getBoundingClientRect().width)
+  }
+  check(openingWidths.every((width, index) => width <= 320.5 && (!index || width >= openingWidths[index - 1] - .5)), 'glass grows monotonically from the circle without overshoot or end rebound')
+  check(getComputedStyle(panel).transform === 'none' && getComputedStyle(panel.querySelector('.hui-reply-details-body')).transform === 'none', 'shape expansion never stretches the text')
   panel.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
   trigger.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: panel }))
   panel.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, relatedTarget: trigger }))
@@ -67,8 +75,8 @@ module.exports = async () => {
   check(trigger.getAttribute('aria-expanded') === 'false', 'Escape closes details')
   await Promise.all(panel.getAnimations().map(animation => animation.ready))
   await wait(45)
-  const closingOpacity = Number(getComputedStyle(panel).opacity)
-  check(panel.dataset.visible === 'true' && closingOpacity > 0 && closingOpacity < 1, `closing keeps the surface visible while fading and shrinking instead of cutting off the opening animation (${closingOpacity}, ${panel.dataset.visible})`)
+  const closingWidth = panel.getBoundingClientRect().width
+  check(panel.dataset.visible === 'true' && closingWidth > trigger.offsetWidth && closingWidth < 320, 'closing continuously reduces the same glass toward the original circle')
   await wait(170)
   check(panel.dataset.visible === 'false' && getComputedStyle(panel).visibility === 'hidden', 'closing finishes and releases the hidden surface')
   trigger.blur()
@@ -81,10 +89,10 @@ module.exports = async () => {
   document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
   await wait(30)
   check(trigger.getAttribute('aria-expanded') === 'false', 'outside click closes details')
-  const interruptedOpacity = Number(getComputedStyle(panel).opacity)
+  const interruptedWidth = panel.getBoundingClientRect().width
   trigger.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
   await new Promise(resolve => requestAnimationFrame(resolve))
-  check(trigger.getAttribute('aria-expanded') === 'true' && Math.abs(Number(getComputedStyle(panel).opacity) - interruptedOpacity) < .25, 'reopening during exit resumes the current visual frame without snapping to an endpoint')
+  check(trigger.getAttribute('aria-expanded') === 'true' && Math.abs(panel.getBoundingClientRect().width - interruptedWidth) < 60, 'reopening during exit resumes the current visual frame without snapping to an endpoint')
   for (const id of ['details-user', 'details-reply']) emit('message.removed', { sessionID, messageID: id })
   await wait(100)
   check(!panel.isConnected, 'removed replies clean up their portal')
