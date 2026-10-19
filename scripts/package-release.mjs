@@ -46,7 +46,8 @@ writeFileSync(join(target, 'README.txt'), [
   '运行方式：双击 Huarnessy.exe。',
   '',
   '前置条件：需要本机已安装 opencode 内核（PATH 中可用 opencode 命令），',
-  '或存在 %APPDATA%\\Clonely\\bin\\opencode.exe。未安装时应用会显示“启动失败”。',
+  '或存在 %APPDATA%\\Clonely\\bin\\opencode.exe，或设置 OPENCODE_BIN 指向内核可执行文件。',
+  '未安装时应用会显示“未找到 opencode 内核”及安装指引。',
   '',
   `打包时间: ${new Date().toISOString()}`,
   ''

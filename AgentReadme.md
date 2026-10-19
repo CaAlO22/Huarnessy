@@ -72,7 +72,8 @@ Huarnessy/
 │  ├─ stream-benchmark-preload.cjs # 页面加载前注入假内核，无真实模型请求
 │  ├─ composer-regressions.cjs # 输入区附件、伸缩、选择面板及 Question 回归
 │  ├─ workspace-regressions.cjs # 工作空间切换、目录作用域及迟到请求回归
-│  └─ workspace-store.test.mjs # 工作空间持久化、路径验证与目录比较测试
+│  ├─ workspace-store.test.mjs # 工作空间持久化、路径验证与目录比较测试
+│  └─ kernel-launch.test.mjs  # 内核二进制解析优先级与未安装时的回退验证
 └─ src/
    ├─ main/
    │  ├─ index.ts              # Electron 主进程：创建无边框窗口、IPC、调试端口开关
@@ -117,6 +118,7 @@ npm run app          # 从 out/ 的独立快照启动，不监听源码（用于
 npm run app:build    # 先构建再按快照启动
 npm run test:stream  # 假内核驱动的 Electron 流式性能与功能回归
 npm run test:workspace # 工作空间设置与目录隔离的单元验证
+npm run test:kernel    # 内核二进制解析与启动失败分类的单元验证
 npm run package:release # 构建并组装 release/Huarnessy-v<版本>-win-x64 便携发行版
 ```
 
@@ -232,9 +234,11 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 
 - **端口**：`freePort()` 动态选空闲端口，监听 `127.0.0.1`。
 - **二进制解析 `resolveOpencodeBin()` 优先级**：
-  1. `OPENCODE_BIN` 环境变量
+  1. `OPENCODE_BIN` 环境变量（文件必须存在）
   2. `%APPDATA%\Clonely\bin\opencode.exe`（**桌面版托管内核，与新版数据库 schema 兼容**）
-  3. PATH 上的 `opencode`
+  3. PATH 上的 `opencode`（先用 `where`/`which` 确认存在）
+  4. 都没有时返回 `null`，`startServer` 直接给出 `errorKind: 'not-found'` 与安装指引，不再把不存在的命令丢给 shell 后误报“启动超时”。
+- **启动失败分类（`ServerInfo.errorKind`）**：`not-found`（本机没有内核）、`exited`（内核进程意外退出，附退出码）、`timeout`（30 秒健康检查未就绪）。`ServerInfo.hint` 携带安装指引或内核 stderr 最后 8 行（`pushStderr`），渲染层在侧栏错误横幅中显示，SQLite schema 不兼容等真实报错因此对用户可见。`npm run test:kernel` 验证解析与回退逻辑。
 - **环境变量净化 `sanitizedEnv()`**：务必删除宿主注入的这些键，否则会干扰独立内核：
   `OPENCODE_CLIENT`、`OPENCODE_SERVER_PASSWORD`、`OPENCODE_SERVER_USERNAME`、`OPENCODE_DISABLE_EMBEDDED_WEB_UI`、`OPENCODE_EXPERIMENTAL_FILEWATCHER`、`OPENCODE_EXPERIMENTAL_ICON_DISCOVERY`。
   删除后为**无鉴权本地服务**，前端可直接连接。
