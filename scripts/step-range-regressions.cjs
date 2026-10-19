@@ -20,18 +20,30 @@ module.exports = async (keepPreview = false) => {
   }
   emit('message.updated', { info: { sessionID, id: 'range-user', role: 'user' } })
   emit('message.part.updated', { part: { sessionID, messageID: 'range-user', id: 'range-user-text', type: 'text', text: '检查长步骤记录' } })
-  for (let index = 1; index <= 12; index++) addCall(index)
-  await waitFor(() => !!document.querySelector('.hui-call-block[data-message-id="range-12"]'))
-  check(!document.querySelector('.hui-step-range'), 'fewer than ten older steps stay individually visible')
+  for (let index = 1; index <= 5; index++) addCall(index)
+  await waitFor(() => !!document.querySelector('.hui-call-block[data-message-id="range-5"]'))
+  check(!document.querySelector('.hui-step-range'), 'the first five steps stay individually visible')
 
-  addCall(13)
-  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="1"][data-end="10"]'))
+  addCall(6)
+  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="1"][data-end="2"]'))
   const first = document.querySelector('.hui-step-range[data-start="1"]')
   const header = first.querySelector('.hui-step-range-header')
-  check(header.getAttribute('aria-expanded') === 'false' && first.querySelectorAll('.hui-call-block').length === 0, 'a completed ten-step range starts compact and leaves old Markdown unmounted')
+  check(header.getAttribute('aria-expanded') === 'false' && first.querySelectorAll('.hui-call-block').length === 0, 'a two-step range starts compact and leaves old Markdown unmounted')
   check(getComputedStyle(header, '::before').content !== 'none' && getComputedStyle(header, '::after').content !== 'none', 'compact summary card shows two shallow layers')
-  check(header.textContent.includes('步骤 1–10') && header.textContent.includes('10 步') && header.querySelector('[data-tool-color="read"]') && header.querySelector('[data-tool-color="write"]'), 'range summary exposes stable numbers and colored tool totals')
-  check(document.querySelector('.hui-call-block[data-message-id="range-13"]').classList.contains('is-active'), 'the newest answer stays a full-width answer')
+  check(header.textContent.includes('步骤 1–2') && header.textContent.includes('2 步') && header.querySelector('[data-tool-color="read"]') && header.querySelector('[data-tool-color="shell"]'), 'range summary exposes stable numbers and colored tool totals')
+  check(document.querySelector('.hui-call-block[data-message-id="range-6"]').classList.contains('is-active'), 'the newest answer stays a full-width answer')
+  check(['range-3', 'range-4', 'range-5'].every(id => document.querySelector(`.hui-call-block[data-message-id="${id}"]`)?.classList.contains('is-step')), 'the three steps before the newest stay individually folded')
+
+  addCall(7)
+  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="1"][data-end="3"]'))
+  addCall(8)
+  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="1"][data-end="4"]'))
+  check(!document.querySelector('.hui-step-range[data-start="5"]'), 'the trailing range absorbs each new step instead of opening a second summary')
+
+  for (let index = 9; index <= 14; index++) addCall(index)
+  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="1"][data-end="10"]'))
+  check(document.querySelector('.hui-call-block[data-message-id="range-14"]').classList.contains('is-active'), 'the newest answer stays a full-width answer')
+  check(['range-11', 'range-12', 'range-13', 'range-14'].every(id => !!document.querySelector(`.hui-call-block[data-message-id="${id}"]`)), 'the four newest calls stay outside the range')
 
   const foldedHeight = first.getBoundingClientRect().height
   const foldedWidth = header.getBoundingClientRect().width
@@ -68,14 +80,20 @@ module.exports = async (keepPreview = false) => {
   scroll.scrollTop = 0
   scroll.dispatchEvent(new Event('scroll', { bubbles: true }))
   await wait(50)
-  for (let index = 14; index <= 23; index++) addCall(index)
-  await waitFor(() => !!document.querySelector('.hui-call-block[data-message-id="range-23"]'))
+  addCall(15)
+  await waitFor(() => !!document.querySelector('.hui-call-block[data-message-id="range-15"]'))
   check(!document.querySelector('.hui-step-range[data-start="11"]') && first.getAttribute('data-expanded') === 'true', 'new calls do not regroup history while the reader is inspecting it')
   scroll.scrollTop = scroll.scrollHeight
   scroll.dispatchEvent(new Event('scroll', { bubbles: true }))
-  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="11"][data-end="20"]'))
+  await waitFor(() => first.getAttribute('data-end') === '11')
+  check(!document.querySelector('.hui-step-range[data-start="11"]'), 'a lone leftover step merges into the previous range instead of a one-step summary')
+  addCall(16)
+  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="11"][data-end="12"]'))
+  check(first.getAttribute('data-end') === '10', 'the previous range stays capped once a second range can hold two steps')
+  for (let index = 17; index <= 23; index++) addCall(index)
+  await waitFor(() => !!document.querySelector('.hui-step-range[data-start="11"][data-end="19"]'))
   check(first.getAttribute('data-expanded') === 'true' && firstStep.querySelector('.hui-call-header').getAttribute('aria-expanded') === 'true', 'returning to the bottom groups newer history without closing manually opened content')
-  check(document.querySelectorAll('.hui-step-range').length === 2 && !!document.querySelector('.hui-call-block[data-message-id="range-23"].is-active'), 'two stable ranges leave the three newest calls visible')
+  check(document.querySelectorAll('.hui-step-range').length === 2 && !!document.querySelector('.hui-call-block[data-message-id="range-23"].is-active'), 'two stable ranges leave the four newest calls visible')
 
   const secondCard = first.querySelectorAll('.hui-step-range-item')[1]
   const beforeClosing = secondCard.getBoundingClientRect().top - header.getBoundingClientRect().bottom

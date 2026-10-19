@@ -525,7 +525,7 @@ const CallBlock = memo(function CallBlock({ messages, order, foldedByNext, visib
   && previous.messages.every((message, index) => message === next.messages[index]))
 
 const stepRangeSize = 10
-const recentCallCount = 3
+const recentCallCount = 4
 
 // A compaction message is a kernel-generated assistant summary; it has no user
 // echo, so it must not join a normal reply turn.
@@ -685,17 +685,26 @@ function StepList({ groups, visibleChars, liquidGlass, canCompact, onExpandRange
   canCompact: boolean
   onExpandRange: () => void
 }): React.ReactElement {
-  // Full ten-step ranges stay anchored to the start of this reply. Keep the
-  // newest calls visible and postpone new compaction while history is read.
-  const eligible = Math.floor(Math.max(0, groups.length - recentCallCount) / stepRangeSize) * stepRangeSize
+  // Sliding compaction: the newest calls stay individual, and every older call
+  // is absorbed into the trailing range as soon as a new call arrives, so the
+  // reader sees "步骤 1–2" grow to "步骤 1–3" one step at a time. A range
+  // needs at least two steps, and new compaction is postponed while history
+  // is read.
+  const eligible = groups.length - recentCallCount >= 2 ? groups.length - recentCallCount : 0
   const [compacted, setCompacted] = useState(eligible)
   useLayoutEffect(() => {
     if (eligible < compacted || (canCompact && eligible > compacted)) setCompacted(eligible)
   }, [eligible, compacted, canCompact])
 
   const items: React.ReactNode[] = []
-  for (let start = 0; start < compacted; start += stepRangeSize) {
-    items.push(<StepRange key={`range-${start}`} groups={groups.slice(start, start + stepRangeSize)} start={start} liquidGlass={liquidGlass} onExpand={onExpandRange} />)
+  // Ranges stay capped near stepRangeSize so expanding one never mounts a huge
+  // stack; a lone leftover step merges into the previous range instead of
+  // becoming a "步骤 N–N" summary of its own.
+  for (let start = 0; start < compacted; ) {
+    const remaining = compacted - start
+    const size = remaining > stepRangeSize + 1 ? stepRangeSize : remaining
+    items.push(<StepRange key={`range-${start}`} groups={groups.slice(start, start + size)} start={start} liquidGlass={liquidGlass} onExpand={onExpandRange} />)
+    start += size
   }
   for (let index = compacted; index < groups.length; index++) {
     const messages = groups[index]
