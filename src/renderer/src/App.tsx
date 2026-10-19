@@ -25,6 +25,47 @@ interface ServerInfo {
   binary?: string
 }
 
+interface SessionRetry {
+  attempt: number
+  message: string
+  next: number
+}
+
+// The kernel retries provider calls with exponential backoff. Surface that
+// wait explicitly; otherwise the session looks frozen between attempts.
+function RetryNotice({ retry }: { retry: SessionRetry }): React.ReactElement {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 500)
+    return () => window.clearInterval(timer)
+  }, [retry.next])
+  const remaining = retry.next > 0 ? Math.max(0, Math.ceil((retry.next - now) / 1000)) : 0
+  return (
+    <div
+      data-hui-retry
+      role="status"
+      aria-live="polite"
+      className="mb-2 flex items-start gap-2.5 rounded-xl border border-amber-300/25 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-100/90"
+    >
+      <span className="hui-retry-dot" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="font-medium">模型连接中断</span>
+          <span className="text-amber-200/60">
+            第 {Math.max(1, retry.attempt)} 次重试
+            {remaining > 0 ? ` · ${remaining} 秒后重试` : ' · 正在重试…'}
+          </span>
+        </div>
+        {retry.message ? (
+          <div className="mt-0.5 max-h-8 overflow-hidden break-words text-[11px] leading-snug text-amber-100/55">
+            {retry.message}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 interface ModelOption {
   providerID: string
   providerName: string
@@ -937,7 +978,69 @@ export default function App(): React.ReactElement {
       return next
     })
   }, [])
+  const [retrySessions, setRetrySessions] = useState<ReadonlyMap<string, SessionRetry>>(() => new Map())
+  const [eventLost, setEventLost] = useState(false)
+  const activeRetry = activeId !== null ? retrySessions.get(activeId) : undefined
   const sendingRef = useRef(false)
+  const clearSessionRetry = useCallback((id: string | null | undefined): void => {
+    if (!id) return
+    setRetrySessions(previous => {
+      if (!previous.has(id)) return previous
+      const next = new Map(previous)
+      next.delete(id)
+      return next
+    })
+  }, [])
+  const applySessionStatus = useCallback((id: string | null | undefined, status: any): void => {
+    if (!id || !status) return
+    if (status.type === 'retry') {
+      const retry: SessionRetry = {
+        attempt: Number(status.attempt) || 0,
+        message: typeof status.message === 'string' ? status.message : '',
+        next: Number(status.next) || 0
+      }
+      // A retrying session is still working: keep the stop control available.
+      markSessionBusy(id, true)
+      setRetrySessions(previous => {
+        const old = previous.get(id)
+        if (old && old.attempt === retry.attempt && old.message === retry.message && old.next === retry.next) return previous
+        const next = new Map(previous)
+        next.set(id, retry)
+        return next
+      })
+      return
+    }
+    clearSessionRetry(id)
+    markSessionBusy(id, status.type === 'busy')
+  }, [clearSessionRetry, markSessionBusy])
+  const syncSessionStatus = useCallback(async (target: any, directory: string): Promise<void> => {
+    try {
+      const result = await target.session.status({ query: { directory }, throwOnError: true })
+      if (target !== clientRef.current) return
+      const statuses = unwrap(result) ?? {}
+      const nextBusy = new Set<string>()
+      const nextRetries = new Map<string, SessionRetry>()
+      for (const [id, status] of Object.entries(statuses)) {
+        if (!status || typeof status !== 'object') continue
+        if ((status as any).type === 'retry') {
+          nextBusy.add(id)
+          nextRetries.set(id, {
+            attempt: Number((status as any).attempt) || 0,
+            message: typeof (status as any).message === 'string' ? (status as any).message : '',
+            next: Number((status as any).next) || 0
+          })
+        } else if ((status as any).type === 'busy') {
+          nextBusy.add(id)
+        }
+      }
+      setRetrySessions(nextRetries)
+      // Do not erase a session whose prompt is still being submitted: the
+      // kernel has not registered it in /session/status yet.
+      if (!sendingRef.current) setBusySessions(nextBusy)
+    } catch {
+      // SSE status events will refresh the state once the connection is back.
+    }
+  }, [])
   const [observations] = useState(() => {
     try { return new StreamObservations(window.localStorage) } catch { return new StreamObservations() }
   })
@@ -1314,6 +1417,7 @@ export default function App(): React.ReactElement {
     setSessions(previous => previous.filter(session => session.id !== id))
     setSessionMenu(previous => previous?.id === id ? null : previous)
     markSessionBusy(id, false)
+    clearSessionRetry(id)
     if (activeIdRef.current === id) {
       clearEvents()
       turnKeys.current.clear()
@@ -1331,7 +1435,7 @@ export default function App(): React.ReactElement {
       rangeReading.current = false
       setFollowingReply(true)
     }
-  }, [clearEvents, markSessionBusy])
+  }, [clearEvents, clearSessionRetry, markSessionBusy])
 
   const deleteSession = useCallback(async (id: string) => {
     const c = clientRef.current
@@ -1399,6 +1503,8 @@ export default function App(): React.ReactElement {
     setCommands([])
     setSlashDismissed(false)
     setBusySessions(new Set<string>())
+    setRetrySessions(new Map())
+    setEventLost(false)
     setInput('')
     setLastError(null)
     stickBottom.current = true
@@ -1464,8 +1570,26 @@ export default function App(): React.ReactElement {
     eventUrl.searchParams.set('directory', workspace)
     const es = new EventSource(eventUrl.href)
     esRef.current = es
-    es.onopen = () => { if (clientRef.current === client) void reloadPermissions() }
-    es.onerror = () => { if (clientRef.current === client) observations.disconnect() }
+    let opened = false
+    es.onopen = () => {
+      if (clientRef.current !== client) return
+      setEventLost(false)
+      const reconnected = opened
+      opened = true
+      void reloadPermissions()
+      void syncSessionStatus(client, workspace)
+      // EventSource does not replay events missed while it was disconnected,
+      // so reconcile history and status after a real reconnect.
+      if (reconnected) {
+        loadSessions()
+        refreshMessages()
+      }
+    }
+    es.onerror = () => {
+      if (clientRef.current !== client) return
+      setEventLost(true)
+      observations.disconnect()
+    }
     es.onmessage = (e) => {
       if (clientRef.current !== client) return
       let evt: any
@@ -1522,8 +1646,15 @@ export default function App(): React.ReactElement {
           enqueueEvent('message.removed', p)
           break
         }
+        case 'session.status': {
+          if (p.sessionID && p.status) applySessionStatus(p.sessionID, p.status)
+          break
+        }
         case 'session.idle': {
-          if (p.sessionID) markSessionBusy(p.sessionID, false)
+          if (p.sessionID) {
+            clearSessionRetry(p.sessionID)
+            markSessionBusy(p.sessionID, false)
+          }
           if (active && p.sessionID === active) {
             flushEvents()
             refreshMessages()
@@ -1531,7 +1662,10 @@ export default function App(): React.ReactElement {
           break
         }
         case 'session.error': {
-          if (p.sessionID) markSessionBusy(p.sessionID, false)
+          if (p.sessionID) {
+            clearSessionRetry(p.sessionID)
+            markSessionBusy(p.sessionID, false)
+          }
           if (active && p.sessionID === active) {
             const message =
               p?.error?.data?.message ?? p?.error?.message ?? p?.error?.name ?? '未知错误'
@@ -1574,7 +1708,10 @@ export default function App(): React.ReactElement {
     resetWorkspaceView,
     receivePermission,
     reloadPermissions,
-    markSessionBusy
+    markSessionBusy,
+    applySessionStatus,
+    clearSessionRetry,
+    syncSessionStatus
   ])
 
   useEffect(() => {
@@ -2173,14 +2310,15 @@ export default function App(): React.ReactElement {
                       y: event.clientY || bounds.bottom
                     })
                   }}
-                  className={`w-full truncate rounded-xl px-3 py-2 text-left text-[13px] transition disabled:cursor-wait disabled:opacity-40 ${
+                  className={`flex w-full items-center gap-1.5 rounded-xl px-3 py-2 text-left text-[13px] transition disabled:cursor-wait disabled:opacity-40 ${
                     s.id === activeId
                       ? 'glass-soft text-white'
                       : 'text-white/60 hover:bg-white/8 hover:text-white/90'
                   }`}
                   title={sessionLabel(s.title)}
                 >
-                  {deletingId === s.id ? '正在删除…' : sessionLabel(s.title)}
+                  <span className="min-w-0 flex-1 truncate">{deletingId === s.id ? '正在删除…' : sessionLabel(s.title)}</span>
+                  {retrySessions.has(s.id) ? <span className="hui-retry-dot" title="模型连接重试中" /> : null}
                 </button>
               ))
             )}
@@ -2256,6 +2394,13 @@ export default function App(): React.ReactElement {
                 <button type="button" onClick={() => void restoreReverted()} disabled={busy || revertingId !== null} className="shrink-0 rounded-md px-2 py-1 font-medium text-cyan-200 transition hover:bg-white/10 disabled:opacity-40">{revertingId ? '恢复中…' : '恢复撤回'}</button>
               </div>
             ) : null}
+            {server?.status === 'ready' && eventLost ? (
+              <div data-hui-event-lost role="status" className="mb-2 flex items-center gap-2 rounded-xl border border-sky-300/25 bg-sky-500/10 px-3 py-2 text-[12px] text-sky-100/85">
+                <span className="hui-retry-dot is-connection" aria-hidden="true" />
+                <span>与内核的连接中断，正在重连…</span>
+              </div>
+            ) : null}
+            {activeRetry ? <RetryNotice retry={activeRetry} /> : null}
             {lastError ? (
               <div className="mb-2 flex items-start justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-500/15 px-3 py-2 text-[12px] text-rose-100">
                 <span className="min-w-0 break-words">{lastError}</span>

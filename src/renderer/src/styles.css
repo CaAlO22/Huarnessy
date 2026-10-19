@@ -128,6 +128,25 @@ body {
   background: rgba(71, 118, 157, calc(.24 * var(--hui-panel-strength, .45)));
   color: rgba(224, 241, 251, .82);
 }
+/* The kernel retries provider calls in the background; the pulsing amber dot
+   keeps that wait visible without animating the surrounding text. */
+.hui-retry-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, .12);
+  animation: hui-retry-pulse 1.2s ease-in-out infinite;
+}
+.hui-retry-dot.is-connection { background: #7dd3fc; box-shadow: 0 0 0 3px rgba(125, 211, 252, .12); }
+@keyframes hui-retry-pulse {
+  0%, 100% { opacity: .45; transform: scale(.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hui-retry-dot { animation: none; }
+}
 .hui-settings-panel { max-height: calc(100vh - 58px); overflow-y: auto; backdrop-filter: blur(22px) saturate(160%); }
 .hui-background-choices { margin: 0; padding: 0; border: 0; }
 .hui-background-choice { display: flex; align-items: center; gap: 10px; min-height: 49px; margin-top: 5px; padding: 6px 8px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.035); cursor: pointer; transition: background 160ms ease, border-color 160ms ease; }

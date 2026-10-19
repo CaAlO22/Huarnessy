@@ -280,6 +280,7 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 ### 会话忙碌状态
 
 - `App.tsx` 用 `busySessions` 集合按会话记录运行状态，`busy` 由当前活动会话推导。从正在生成的会话切换到空闲会话时右下角显示“发送”而非错误地沿用“停止”，切回仍在工作的会话会恢复“停止”。发送、内置压缩标记当前会话；`session.idle` / `session.error` 无论会话是否为当前活动都会清除对应标记；工作空间切换、删除会话与撤回成功分别清理相关标记。假内核回归见 `scripts/busy-session-regressions.cjs`。
+- `session.status` 的 `retry` 状态也在界面显式呈现：当前会话在输入框上方显示黄色「模型连接中断」提示，包含尝试次数、倒计时、内核返回的错误摘要；侧栏对应会话带脉动圆点，切到其他会话时提示消失但侧栏标记保留。`retry` 期间仍视为忙碌（保留「停止」），`busy` 只清除提示，`idle` / `session.error` 同时清除提示和标记。主 SSE 断开时输入框上方显示蓝色「与内核的连接中断，正在重连…」；`EventSource` 重连成功后重新拉取历史、会话列表与 `/session/status`，弥补断线期间丢失的事件。系统减少动态效果时圆点停止脉动。回归见 `scripts/busy-session-regressions.cjs`。
 
 ### 会话删除
 
