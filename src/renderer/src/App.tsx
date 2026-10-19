@@ -275,6 +275,66 @@ const ToolBeam = (): React.ReactElement => {
   )
 }
 
+// Long reasoning folds into a bottom-pinned preview window that keeps showing
+// the freshest lines while the model thinks. The fold animates from the full
+// height down to the preview instead of snapping, and a masked gradient fades
+// the clipped top. The header only appears once the text crosses the threshold;
+// a manual toggle is never overridden by later streamed deltas.
+const reasoningCollapseThreshold = 400
+
+const ReasoningBlock = memo(function ReasoningBlock({ text, done }: { text: string; done: boolean }): React.ReactElement {
+  const panelId = useId()
+  const [collapsed, setCollapsed] = useState(false)
+  const [overThreshold, setOverThreshold] = useState(false)
+  const autoCollapsed = useRef(false)
+  const manuallyToggled = useRef(false)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const animateFrom = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    if (text.length <= reasoningCollapseThreshold) return
+    if (!overThreshold) setOverThreshold(true)
+    if (!autoCollapsed.current && !manuallyToggled.current) {
+      autoCollapsed.current = true
+      animateFrom.current = bodyRef.current?.getBoundingClientRect().height ?? null
+      setCollapsed(true)
+    }
+  }, [text.length, overThreshold])
+  const toggle = (): void => {
+    manuallyToggled.current = true
+    animateFrom.current = bodyRef.current?.getBoundingClientRect().height ?? null
+    setCollapsed(value => !value)
+  }
+  // Chromium cannot interpolate max-height from `none`, so the height change is
+  // driven by an explicit animation between the measured before/after heights;
+  // it hands off to the CSS value on finish, keeping the fold gradual.
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    const from = animateFrom.current
+    animateFrom.current = null
+    if (!el || from === null || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const to = el.getBoundingClientRect().height
+    if (Math.abs(to - from) < 2) return
+    el.animate(
+      [{ maxHeight: `${from}px` }, { maxHeight: `${to}px` }],
+      { duration: 420, easing: 'cubic-bezier(.2, .85, .28, 1)' }
+    )
+  }, [collapsed])
+  return (
+    <section className="hui-reasoning-block">
+      {overThreshold ? (
+        <button className="hui-reasoning-header" type="button" aria-expanded={!collapsed} aria-controls={panelId} onClick={toggle}>
+          <span className="hui-call-chevron" aria-hidden="true" />
+          <span className="hui-reasoning-heading">思考</span>
+          <span className="hui-reasoning-state">{collapsed ? '展开' : '收起'}</span>
+        </button>
+      ) : null}
+      <div id={panelId} ref={bodyRef} className="hui-reasoning" data-collapsed={collapsed}>
+        <StreamingMarkdown text={text} done={done} />
+      </div>
+    </section>
+  )
+})
+
 const PartView = memo(function PartView({ part, completed, textLimit }: { part: any; completed: boolean; textLimit?: number }): React.ReactElement | null {
   const done = completed || part.time?.end != null
   const toolKey = part.type === 'tool' ? String(part.tool ?? '').toLowerCase() : ''
@@ -306,11 +366,7 @@ const PartView = memo(function PartView({ part, completed, textLimit }: { part: 
 
   if (part.type === 'reasoning') {
     if (!text) return null
-    return (
-      <div className="hui-reasoning">
-        <StreamingMarkdown text={text} done={done} />
-      </div>
-    )
+    return <ReasoningBlock text={text} done={done} />
   }
 
   if (part.type === 'tool') {

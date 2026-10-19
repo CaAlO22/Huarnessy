@@ -499,11 +499,66 @@ body {
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* Registered so the top fade gradient can animate together with the height
+   collapse; an unregistered custom property would jump discretely. */
+@property --hui-reasoning-fade {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+.hui-reasoning-block {
+  min-width: 0;
+}
+.hui-reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: rgba(235, 243, 252, 0.62);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.hui-reasoning-header:focus-visible { outline: 2px solid #9bdbe9; outline-offset: -2px; }
+.hui-reasoning-heading { font-weight: 650; }
+.hui-reasoning-state { color: rgba(213, 226, 239, 0.45); }
+.hui-reasoning-header[aria-expanded='true'] .hui-call-chevron { transform: rotate(45deg); }
+
 .hui-reasoning {
   border-left: 2px solid rgba(255, 255, 255, 0.15);
   padding-left: 0.75rem;
   opacity: 0.55;
   font-size: 12.5px;
+  min-width: 0;
+  max-height: none;
+  --hui-reasoning-fade: 0px;
+  /* The mask fades the text itself instead of painting a color band, so the
+     glass background keeps showing through the clipped top. The height change
+     itself is animated in JS (ReasoningBlock) because max-height cannot
+     interpolate from `none`. */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hui-reasoning-fade));
+  transition: --hui-reasoning-fade 420ms cubic-bezier(.2, .85, .28, 1);
+}
+/* Collapsed keeps the DOM mounted and pins the window to the newest lines:
+   flex-end pushes the overflowing content up out of view, so streamed
+   thinking stays live at the bottom of the preview. */
+.hui-reasoning[data-collapsed='true'] {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: 4.5em;
+  overflow: hidden;
+  --hui-reasoning-fade: 2.5em;
+}
+/* Without this the flex child would shrink into the window instead of
+   overflowing, and the newest lines would never leave the visible area. */
+.hui-reasoning[data-collapsed='true'] > * {
+  flex: none;
 }
 
 .hui-call-block {
@@ -1081,7 +1136,7 @@ body {
   .hui-call-block.is-step[data-expanded='false'] .hui-call-reveal,
   .hui-call-block.is-step[data-expanded='false'] .hui-call-content,
   .hui-call-chevron, .hui-call-block.is-step .hui-message-parts > *,
-  .hui-call-collapse {
+  .hui-call-collapse, .hui-reasoning {
     transition-duration: 1ms;
     transition-delay: 0ms;
   }

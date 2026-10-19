@@ -60,6 +60,34 @@ module.exports = async (preview = false) => {
   emit('message.part.delta', { sessionID, messageID: 'ui-reply', partID: 'ui-reply-part', field: 'text', delta: '继续流式' })
   await wait(40)
   check(document.querySelector('.hui-reasoning')?.textContent.includes('继续流式') && bubble.classList.contains('is-ready'), 'subsequent deltas render without restarting the entrance animation')
+  const reasoningEl = bubble.querySelector('.hui-reasoning')
+  check(!bubble.querySelector('.hui-reasoning-header') && reasoningEl.getAttribute('data-collapsed') === 'false', 'short reasoning shows no collapse header and stays expanded')
+  emit('message.part.delta', { sessionID, messageID: 'ui-reply', partID: 'ui-reply-part', field: 'text', delta: '追加思考内容用于触发折叠。'.repeat(20) })
+  await waitFor(() => !!bubble.querySelector('.hui-reasoning-header'))
+  check(reasoningEl.getAttribute('data-collapsed') === 'true', 'reasoning past the threshold auto-collapses')
+  await wait(80)
+  const midFoldHeight = reasoningEl.getBoundingClientRect().height
+  const previewHeight = 4.5 * 12.5
+  check(midFoldHeight > previewHeight + 4, 'the fold shrinks gradually instead of snapping to the preview height')
+  await wait(420)
+  const collapsedHeight = reasoningEl.getBoundingClientRect().height
+  // With flex-end the child overflows toward the start edge, which scrollHeight
+  // does not count, so assert the child's own height exceeds the window instead.
+  check(Math.abs(collapsedHeight - previewHeight) < 2 && reasoningEl.firstElementChild.getBoundingClientRect().height > reasoningEl.clientHeight + 40, 'the collapsed window shows a few lines of a much taller thinking block')
+  const thinkingWindow = reasoningEl.getBoundingClientRect()
+  const lastThinkingLine = reasoningEl.querySelector('.hui-md').lastElementChild.getBoundingClientRect()
+  const firstThinkingLine = reasoningEl.querySelector('.hui-md').firstElementChild.getBoundingClientRect()
+  check(Math.abs(lastThinkingLine.bottom - thinkingWindow.bottom) < 2, 'the collapsed preview pins the newest thinking lines to the bottom')
+  check(firstThinkingLine.top < thinkingWindow.top - 20, 'older thinking scrolls out above the collapsed window')
+  const reasoningHeader = bubble.querySelector('.hui-reasoning-header')
+  reasoningHeader.click()
+  await wait(460)
+  const fullThinkingHeight = reasoningEl.getBoundingClientRect().height
+  check(midFoldHeight < fullThinkingHeight - 4, 'the auto-collapse animates down from the full thinking height')
+  check(reasoningEl.getAttribute('data-collapsed') === 'false' && Math.abs(fullThinkingHeight - reasoningEl.scrollHeight) < 2, 'the header expands the full thinking text')
+  reasoningHeader.click()
+  await wait(460)
+  check(reasoningEl.getAttribute('data-collapsed') === 'true' && Math.abs(reasoningEl.getBoundingClientRect().height - previewHeight) < 2, 'the header folds the thinking text again')
   emit('session.error', { sessionID, error: { message: '测试结束' } })
   await wait(30)
   const oldMarkdown = bubble.querySelector('.hui-md')
