@@ -67,7 +67,7 @@ module.exports = async (preview = false) => {
   check(reasoningEl.getAttribute('data-collapsed') === 'true', 'reasoning past the threshold auto-collapses')
   await wait(80)
   const midFoldHeight = reasoningEl.getBoundingClientRect().height
-  const previewHeight = 7.65 * 12.5
+  const previewHeight = 8.415 * 12.5
   check(midFoldHeight > previewHeight + 4, 'the fold shrinks gradually instead of snapping to the preview height')
   await wait(420)
   const collapsedHeight = reasoningEl.getBoundingClientRect().height

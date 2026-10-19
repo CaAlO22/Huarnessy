@@ -581,9 +581,9 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  max-height: 7.65em;
+  max-height: 8.415em;
   overflow: hidden;
-  --hui-reasoning-fade: 4em;
+  --hui-reasoning-fade: 4.4em;
 }
 /* Without this the flex child would shrink into the window instead of
    overflowing, and the newest lines would never leave the visible area. */
