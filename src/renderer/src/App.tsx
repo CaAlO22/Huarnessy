@@ -19,6 +19,8 @@ interface ServerInfo {
   url?: string
   port?: number
   error?: string
+  errorKind?: 'not-found' | 'exited' | 'timeout'
+  hint?: string
   version?: string
   binary?: string
 }
@@ -2015,7 +2017,9 @@ export default function App(): React.ReactElement {
             title={server?.status === 'ready'
               ? `已连接 :${server.port}${server.version ? ` · v${server.version}` : ''}`
               : server?.status === 'error'
-                ? '启动失败'
+                ? server.errorKind === 'not-found'
+                  ? '未找到 opencode 内核'
+                  : '内核启动失败'
                 : '正在启动 opencode…'}
           />
           <div ref={settingsRef} className="relative no-drag">
@@ -2184,6 +2188,11 @@ export default function App(): React.ReactElement {
           {server?.status === 'error' ? (
             <div className="mt-2 text-[11px] leading-snug text-rose-300/90">
               {server.error}
+              {server.hint ? (
+                <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-line break-words text-rose-200/60">
+                  {server.hint}
+                </div>
+              ) : null}
               <button
                 onClick={() => window.api.restartServer()}
                 className="mt-1 block w-full rounded-lg bg-rose-500/20 px-2 py-1 text-rose-200 hover:bg-rose-500/30"
