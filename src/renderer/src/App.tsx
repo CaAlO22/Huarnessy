@@ -941,6 +941,21 @@ function QuestionDialog({ request, busy, onReply, onReject }: {
 }
 
 export default function App(): React.ReactElement {
+  const [windowMaximized, setWindowMaximized] = useState(false)
+  useEffect(() => {
+    const windowApi = window.api?.window
+    if (!windowApi?.getState || !windowApi?.onState) return
+    let active = true
+    void windowApi.getState()
+      .then(state => { if (active) setWindowMaximized(state.maximized || state.fullScreen) })
+      .catch(() => { /* Keep the rounded shell if the native state is unavailable. */ })
+    const unsubscribe = windowApi.onState(state => setWindowMaximized(state.maximized || state.fullScreen))
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [])
+
   const [server, setServer] = useState<ServerInfo | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
   const [choosingWorkspace, setChoosingWorkspace] = useState(false)
@@ -2132,7 +2147,7 @@ export default function App(): React.ReactElement {
 
   return (
     <CollapseScrollContext.Provider value={adjustScrollForCollapse}>
-      <div className="relative flex h-screen w-screen flex-col overflow-hidden" style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
+      <div className={`hui-window-shell relative flex h-screen w-screen flex-col overflow-hidden${windowMaximized ? ' is-maximized' : ''}`} style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
       <div className="app-bg" data-mode={backgroundMode} aria-hidden="true">
         {backgroundMode === 'color' ? <GradFlow config={colorFlow} /> : null}
         {backgroundMode === 'subtle' ? <MottledBackground /> : null}

@@ -14,6 +14,17 @@ function broadcast(info: ServerInfo): void {
   mainWindow?.webContents.send('server:status', info)
 }
 
+function getWindowState(): { maximized: boolean; fullScreen: boolean } {
+  return {
+    maximized: mainWindow?.isMaximized() ?? false,
+    fullScreen: mainWindow?.isFullScreen() ?? false
+  }
+}
+
+function sendWindowState(): void {
+  mainWindow?.webContents.send('window:state', getWindowState())
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -22,7 +33,13 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     frame: false,
-    backgroundColor: '#07070c',
+    // Transparent, frameless windows let the renderer paint its own 20px
+    // rounded shell. Keeping the window opaque leaves DWM's 1px border and
+    // fixed native corner radius visible, which shows up as light edges on
+    // secondary displays.
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -31,7 +48,14 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    sendWindowState()
+    mainWindow?.show()
+  })
+  mainWindow.on('maximize', sendWindowState)
+  mainWindow.on('unmaximize', sendWindowState)
+  mainWindow.on('enter-full-screen', sendWindowState)
+  mainWindow.on('leave-full-screen', sendWindowState)
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -79,6 +103,7 @@ app.whenReady().then(async () => {
     stopServer()
     return startServer(broadcast)
   })
+  ipcMain.handle('window:state', () => getWindowState())
   ipcMain.handle('window:minimize', () => mainWindow?.minimize())
   ipcMain.handle('window:maximize', () => {
     if (!mainWindow) return

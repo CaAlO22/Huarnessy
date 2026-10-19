@@ -12,6 +12,7 @@ html,
 body,
 #root {
   height: 100%;
+  background: transparent;
 }
 
 body {
@@ -21,14 +22,24 @@ body {
   color-scheme: dark;
   font-family:
     'Noto Sans SC Variable', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
-  background: #090a0d;
+}
+
+/* The native window is transparent so the shell owns the silhouette. Opaque
+   body paint would fill the corners with a rectangle; it also left a light
+   hairline visible after moving the window to a display with a different DPI. */
+.hui-window-shell {
+  border-radius: 20px;
+}
+.hui-window-shell.is-maximized {
+  border-radius: 0;
 }
 
 .app-bg {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: -1;
   overflow: hidden;
+  border-radius: inherit;
   background: #090a0d;
   pointer-events: none;
 }

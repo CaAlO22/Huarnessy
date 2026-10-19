@@ -13,7 +13,14 @@ window.api = {
     return next
   },
   getServerInfo: async () => ({ status: 'ready', url: 'http://127.0.0.1:1', port: 1 }),
-  onServerStatus: () => () => {}, window: { minimize() {}, maximize() {}, close() {} }
+  onServerStatus: () => () => {},
+  window: {
+    getState: async () => ({ maximized: false, fullScreen: false }),
+    onState: () => () => {},
+    minimize() {},
+    maximize() {},
+    close() {}
+  }
 }
 window.benchSessions = [
   { id: sessionID, title: 'Streaming benchmark', directory: window.benchWorkspace },
