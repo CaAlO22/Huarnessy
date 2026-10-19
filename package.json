@@ -11,7 +11,8 @@
     "package:release": "electron-vite build && node scripts/package-release.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:stream": "node scripts/stream-benchmark.mjs",
-    "test:workspace": "node --test scripts/workspace-store.test.mjs"
+    "test:workspace": "node --test scripts/workspace-store.test.mjs",
+    "test:kernel": "node --test scripts/kernel-launch.test.mjs"
   },
   "keywords": [],
   "author": "",
