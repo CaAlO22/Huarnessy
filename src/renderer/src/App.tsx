@@ -14,16 +14,7 @@ import { useLiquidGlassSurface } from './LiquidGlass'
 import { MottledBackground } from './MottledBackground'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
 
-interface ServerInfo {
-  status: 'starting' | 'ready' | 'error' | 'stopped'
-  url?: string
-  port?: number
-  error?: string
-  errorKind?: 'not-found' | 'exited' | 'timeout'
-  hint?: string
-  version?: string
-  binary?: string
-}
+import type { ServerInfo } from '../../shared/kernel'
 
 interface SessionRetry {
   attempt: number

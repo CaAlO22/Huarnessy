@@ -1,10 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
-import { startServer, stopServer, getServerInfo, type ServerInfo } from './opencode-server'
+import { startServer, stopServer, getServerInfo, getServerConnection, type ServerInfo } from './opencode-server'
+import { loadKernelPath, saveKernelPath } from './kernel-settings'
 import { loadWorkspace, saveWorkspace } from './workspace'
 
 let mainWindow: BrowserWindow | null = null
 let workspace = process.cwd()
+let kernelPath: string | undefined
 
 if (process.env.REMOTE_DEBUGGING_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.REMOTE_DEBUGGING_PORT)
@@ -84,6 +86,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  kernelPath = await loadKernelPath(app.getPath('userData'))
   workspace = await loadWorkspace(app.getPath('userData'), process.cwd())
   ipcMain.handle('workspace:get', () => workspace)
   ipcMain.handle('workspace:choose', async () => {
@@ -99,8 +102,24 @@ app.whenReady().then(async () => {
     return workspace
   })
   ipcMain.handle('server:get', () => getServerInfo())
+  ipcMain.handle('server:connection', () => getServerConnection())
   ipcMain.handle('server:restart', async () => {
-    stopServer()
+    return startServer(broadcast, kernelPath)
+  })
+  ipcMain.handle('server:choose', async () => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择 OpenCode 内核', properties: ['openFile'],
+      filters: process.platform === 'win32' ? [{ name: '内核可执行文件', extensions: ['exe', 'cmd', 'bat'] }] : []
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    await saveKernelPath(app.getPath('userData'), result.filePaths[0])
+    kernelPath = result.filePaths[0]
+    return startServer(broadcast, kernelPath)
+  })
+  ipcMain.handle('server:auto', async () => {
+    await saveKernelPath(app.getPath('userData'))
+    kernelPath = undefined
     return startServer(broadcast)
   })
   ipcMain.handle('window:state', () => getWindowState())
@@ -113,7 +132,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('window:close', () => mainWindow?.close())
 
   createWindow()
-  startServer(broadcast)
+  void startServer(broadcast, kernelPath)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

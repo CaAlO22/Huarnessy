@@ -233,18 +233,13 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 
 ## 6. 内核管理要点（`src/main/opencode-server.ts`）
 
-- **端口**：`freePort()` 动态选空闲端口，监听 `127.0.0.1`。
-- **二进制解析 `resolveOpencodeBin()` 优先级**：
-  1. `OPENCODE_BIN` 环境变量（文件必须存在）
-  2. `%APPDATA%\Clonely\bin\opencode.exe`（**桌面版托管内核，与新版数据库 schema 兼容**）
-  3. PATH 上的 `opencode`（先用 `where`/`which` 确认存在）
-  4. 都没有时返回 `null`，`startServer` 直接给出 `errorKind: 'not-found'` 与安装指引，不再把不存在的命令丢给 shell 后误报“启动超时”。
-- **启动失败分类（`ServerInfo.errorKind`）**：`not-found`（本机没有内核）、`exited`（内核进程意外退出，附退出码）、`timeout`（30 秒健康检查未就绪）。`ServerInfo.hint` 携带安装指引或内核 stderr 最后 8 行（`pushStderr`），渲染层在侧栏错误横幅中显示，SQLite schema 不兼容等真实报错因此对用户可见。`npm run test:kernel` 验证解析与回退逻辑。
-- **环境变量净化 `sanitizedEnv()`**：务必删除宿主注入的这些键，否则会干扰独立内核：
-  `OPENCODE_CLIENT`、`OPENCODE_SERVER_PASSWORD`、`OPENCODE_SERVER_USERNAME`、`OPENCODE_DISABLE_EMBEDDED_WEB_UI`、`OPENCODE_EXPERIMENTAL_FILEWATCHER`、`OPENCODE_EXPERIMENTAL_ICON_DISCOVERY`。
-  删除后为**无鉴权本地服务**，前端可直接连接。
-- **健康检查**：轮询 `GET /global/health` 获取 `version`，据此判定 `ready/error`。
-- Windows 下 PATH 里的 `opencode` 是 shell shim，需 `shell:true` 启动。
+- 主进程异步发现：用户保存的内核路径 → `OPENCODE_BIN` → `%APPDATA%\Clonely\bin\opencode.exe` → PATH 的实际可执行文件；不扫描整块磁盘。手动选择保存在 Electron userData 的 `kernel.json`，失效时明确报错，不能静默切换内核。
+- 每次启动先发布 discovering，随后 version / launching / checking / ready 或 error。版本探测上限 5 秒，健康检查上限 30 秒、单次请求 2 秒；所有状态带 attempt/sequence，旧进程及迟到结果不得覆盖新启动。
+- 1.x 验证 `/global/health`；2.x 验证 `/api/info`，由本应用生成独立 `OPENCODE_PASSWORD`，并指定 `--cors null` 允许生产 file:// 页面。连接凭据通过独立 `server:connection` IPC 获取，不进入诊断状态。
+- 共享状态类型位于 `src/shared/kernel.ts`。错误包括 not-found / spawn / version / port / exited / auth / protocol / timeout；stdout 和 stderr 保留最后 200 行且最多 64 KiB，清除 ANSI 并遮蔽凭据，SQLite schema 报错等必须对用户可见。
+- 动态分配 127.0.0.1 本地端口；重启取消旧探测并只回收本应用启动的进程树，不接管或关闭其他 TUI 后台服务。Windows PATH 中忽略 POSIX 无扩展名 shim，cmd/bat 经显式 cmd 引用启动。
+- 净化宿主注入的 OPENCODE_CLIENT、旧/新密码及历史实验环境变量；仅对 2.x 注入本次随机密码。不自动升级、降级或改写用户配置。
+- `npm run test:kernel` 覆盖发现、设置、失效选择、诊断脱敏，并用真实 Node 子进程模拟两版健康接口、鉴权、中文空格路径及退出错误；模拟版本号不代表真实 OpenCode 兼容性验证。
 
 ---
 

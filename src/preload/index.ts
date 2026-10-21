@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ServerInfo } from '../main/opencode-server'
+import type { KernelConnection } from '../shared/kernel'
 
 export interface WindowState {
   maximized: boolean
@@ -10,6 +11,9 @@ const api = {
   getWorkspacePath: (): Promise<string> => ipcRenderer.invoke('workspace:get'),
   chooseWorkspacePath: (): Promise<string | null> => ipcRenderer.invoke('workspace:choose'),
   getServerInfo: (): Promise<ServerInfo> => ipcRenderer.invoke('server:get'),
+  getServerConnection: (): Promise<KernelConnection | null> => ipcRenderer.invoke('server:connection'),
+  chooseKernel: (): Promise<ServerInfo | null> => ipcRenderer.invoke('server:choose'),
+  resetKernel: (): Promise<ServerInfo> => ipcRenderer.invoke('server:auto'),
   restartServer: (): Promise<ServerInfo> => ipcRenderer.invoke('server:restart'),
   onServerStatus: (cb: (info: ServerInfo) => void): (() => void) => {
     const listener = (_e: unknown, info: ServerInfo): void => cb(info)
