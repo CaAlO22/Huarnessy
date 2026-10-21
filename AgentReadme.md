@@ -8,7 +8,7 @@
 
 **Huarnessy** 是一个用 **Electron + React 从零编写的 opencode 图形客户端**。
 
-- 不修改开放源代码内核，而是把官方 `opencode` 作为**本地 HTTP/SSE 服务**拉起（`opencode serve`），前端通过官方 SDK + 原生 `EventSource` 与之交互。
+- 不修改开放源代码内核，而是把官方 `opencode` 作为**本地 HTTP/SSE 服务**拉起（`opencode serve`），前端通过双版本适配器使用对应官方 SDK 与 SSE 和内核交互。
 - 定位是 **WebUI 外壳**：内核负责会话/模型/工具执行，外壳负责界面与流式展示。
 - 视觉风格为「液态玻璃」（窗口内部 CSS `backdrop-filter`，不穿透桌面、不依赖 Win32/DWM）。
 - 主窗口启用透明无边框（`transparent: true`、`backgroundColor: '#00000000'`、`hasShadow: false`），由渲染层的 `.hui-window-shell` 绘制 20px 圆角轮廓；最大化/全屏时经 `window:state` 去掉圆角。不要改回不透明窗口底色：DWM 会保留固定圆角和 1px 亮边，窗口拖到不同 DPI 的副屏后两侧会出现白边。
@@ -55,7 +55,7 @@
 | 界面字体 | 本地打包的 Noto Sans SC Variable（SIL OFL 1.1；授权副本在 `src/renderer/public/licenses/`） |
 | Markdown | Worker 中的 `unified` + `remark-parse` + `remark-gfm` + `remark-math` + `remark-rehype` + `rehype-stringify`；`react-markdown` 提供安全 URL 转换 |
 | 高亮/公式 | `highlight.js`、`katex` |
-| 内核通信 | `@opencode-ai/sdk/client`（REST）+ 原生 `EventSource`（SSE） |
+| 内核通信 | 1.x：`@opencode-ai/sdk/client` + EventSource；2.x：`@opencode/client@2.0.32` + 鉴权 SSE |
 
 ---
 
@@ -134,7 +134,7 @@ npm run package:release # 构建并组装 release/Huarnessy-v<版本>-win-x64 �
 ## 5. 流式渲染设计（2026-10-06 修订）
 
 ### 数据流
-`opencode serve` → SSE `/event` → 有序消息事件队列 → 每帧提交 React 状态 → 立即显示新文本。
+`opencode serve` → 版本适配器（1.x `/event`、2.x `/api/event`）→ 统一有序消息事件队列 → 每帧提交 React 状态 → 立即显示新文本。
 Markdown / KaTeX / 高亮由独立 Worker 计算；格式化结果在下一绘制帧应用，期间新增文本始终可见。
 
 ### 已验证的问题
@@ -243,11 +243,31 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 
 ---
 
+### 双版本通信与连接界面
+
+- `kernel-client.ts` 是渲染层唯一协议入口：1.x 封装 `@opencode-ai/sdk`，2.x 固定 `@opencode/client@2.0.32` Promise 客户端；界面及 PermissionGate 不再创建独立 SDK。每个客户端绑定目录与 AbortController，工作空间切换关闭事件流并取消旧请求。
+- `kernel-projection.ts` 将 2.x 原生 session.text/reasoning/tool/step/execution/compaction 事件投影到原有有序归并队列。正文及思考 ID 是 message ID + content ordinal，工具 ID 是 message ID + tool ID；结束事件是完整快照替换，不能再次追加。2.x 全局事件先按 location/已验证会话归属过滤，所有 HTTP 请求额外携带编码的 x-opencode-directory。列表及消息历史遍历分页。
+- 2.x 会话模型、Agent 由 switchModel/switchAgent 切换；文件使用原生 URI 附件，压缩/停止/撤回/恢复分别映射原生接口。权限字段 action/resources/save 映射旧 UI；Form 通过 KernelFormDialog 展示文本、数字、整数、布尔、单选、多选、条件字段及外部步骤。
+- 2.x 事件通过 SDK 的 fetch 流携带鉴权，以 1/2/4/8/10 秒间隔重连；重连补查历史、模型、会话、运行状态、授权及待答表单，写操作不重放。1.x 保留原生 EventSource 自动重连。Markdown Worker、缓存和有界格式化队列保持原机制。
+- 标题栏文字状态可打开 ConnectionStatus 诊断面板；空白聊天页展示启动进度、失败原因和重试/选内核/恢复自动选择。会话/模型/命令加载失败在界面显示，空模型列表提示检查配置；诊断复制只序列化 ServerInfo，不包含连接凭据。
+- `npm run test:kernel` 同时运行启动与协议测试；协议测试使用 SDK 真实序列化和独立 HTTP 假响应，不代表真实模型输出速度。
+- `npm run test:kernel-ui`（可加 `--production`）使用独立 2.x HTTP/SSE 假内核，覆盖状态快照竞态、进度/失败/诊断复制、选择与重试防重、分页、原生流式去重、目录过滤、权限、条件数字表单及断线恢复。生产测试前先 build；测试截图仅写入 out/。
+- `npm run test:kernel-ui -- --production --real` 使用真实内核和隔离的临时配置/数据目录，不发送模型请求。可设置 `HUI_KERNEL_V1_BIN`、`HUI_KERNEL_V2_BIN` 指定两版二进制；默认检查 Clonely 的 1.x 和临时目录 huarnessy-real-kernel-2.0.32/opencode.exe。真实测试验证浏览器健康接口、SDK 会话/配置、带目录的 SSE，以及 file:// 生产 Origin 的鉴权和跨域。版本探测须接受 1.x 的纯版本字符串和 2.x 的 `opencode v2.0.32` 前缀。
+- 首次初始化须同时完成 REST 加载及事件握手；2.x 事件握手限时 15 秒，重连超过 30 秒持续显示正在自动重试。请求诊断只保留最近 50 次的方法、路径、HTTP 状态和错误类别，不记录请求体或鉴权头。压缩通过 compact 入队后等待原生 wait 接口完成，避免把入队确认误当成压缩完成；撤回显式传 files=true。
+
+
+### 双版本适配验证记录（2026-10-21）
+
+- typecheck、build、内核启动/协议测试（10 项）和工作空间设置测试（2 项）通过。
+- 独立 2.0.32 HTTP/SSE 假内核的开发与生产 UI 回归（11 项）通过；诊断面板另有截图检查及窗口内定位断言。
+- test:stream 常规开发、开发 --large 和 --production 通过。长输入分别为列表 17,300 字符、段落 20,640 字符、多段落 8,803 字符、代码 28,818 字符。均为假内核受控输入，不代表真实模型速度。
+- 真实 1.18.29 与 2.0.32 在隔离的临时配置/数据目录中通过开发和 file:// 生产页面的健康接口、SDK 会话/配置、目录及鉴权 SSE 检查，没有发送真实模型请求。其他版本未据此宣称已完整验证。
+
 ## 7. 环境与已知坑
 
 - **数据库版本兼容**：默认 DB `~/.local/share/opencode/opencode.db` 由桌面版写入；若用旧版 CLI 会报 `SQLiteError: no such column: replacement_seq`。用 `resolveOpencodeBin()` 的优先级规避。
-- **SDK 入口**：必须用 `@opencode-ai/sdk/client`；根入口会引入 Node `child_process`，浏览器打包失败。
-- **CORS**：内核会反射 Origin（`Access-Control-Allow-Origin`），可跨源直连。
+- **SDK 入口**：1.x 使用 `@opencode-ai/sdk/client`，旧包根入口会引入 Node `child_process`；2.x 使用 `@opencode/client` 的 Promise 入口，不能把 Node 专用 service 模块引入渲染层。
+- **CORS**：1.x 反射 Origin；2.x 使用允许列表，独立服务显式传 `--cors null` 支持生产 file:// 页面，REST 和 SSE 均携带鉴权。
 - **模型可用性**：`config.providers()` 返回多个 provider/模型；沙箱/离线环境常只有 `deepseek/deepseek-flash`、`deepseek/deepseek-v4-pro` 可用。默认 `config.get().model` 可能不可达。
 - **发送接口**：用 `POST /session/{id}/prompt_async`（发后即返回，结果走 SSE）；停止用 `POST /session/{id}/abort`。
 - TS7 已移除 `baseUrl`，`paths` 用相对 `./`。

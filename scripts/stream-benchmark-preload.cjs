@@ -122,7 +122,11 @@ window.fetch = async (url, options) => {
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
 }
 window.EventSource = class {
-  constructor(url) { this.url = url; window.benchSources.push(this); window.benchSource = this }
+  constructor(url) {
+    this.url = url; window.benchSources.push(this); window.benchSource = this
+    // A real EventSource reports its initial successful handshake, after handlers are registered.
+    queueMicrotask(() => { if (!this.closed) this.onopen?.() })
+  }
   close() { this.closed = true }
 }
 window.benchEmit = (type, properties) => {

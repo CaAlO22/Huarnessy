@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createOpencodeClient, type PermissionRequest } from '@opencode-ai/sdk/v2/client'
+import type { KernelClient, PermissionRequest } from './kernel-client'
 
 type Reply = 'once' | 'always' | 'reject'
 
-export function usePermissions(url: string | undefined, directory: string | null, sessionID: string | null, autoApprove = false) {
-  const client = useMemo(() => url && directory ? createOpencodeClient({ baseUrl: url, directory }) : null, [url, directory])
+export function usePermissions(client: KernelClient | null, directory: string | null, sessionID: string | null, autoApprove = false) {
   const context = useMemo(() => ({ client, directory, sessionID }), [client, directory, sessionID])
   const current = useRef(context)
   current.current = context

@@ -49,6 +49,7 @@ module.exports = async () => {
   Array.from(document.querySelectorAll('button')).find(button => button.title === 'Message actions').click()
   await waitFor(() => !!document.querySelector('.hui-revert-notice'))
   check(actions().length === 0, 'reverted turns stay hidden when reopening the session')
+  await waitFor(() => !document.querySelector('.hui-revert-notice button').disabled)
   document.querySelector('.hui-revert-notice button').click()
   await waitFor(() => actions().length === 2)
   check(!document.querySelector('.hui-revert-notice') && window.benchRequests.some(item => item.path === `/session/${sessionID}/unrevert`), 'restore brings back the conversation through the kernel')
@@ -56,6 +57,7 @@ module.exports = async () => {
   actions()[1].querySelector('[aria-label="撤回消息"]').click()
   await waitFor(() => document.querySelector('.hui-revert-notice')?.textContent.includes('已撤回 1 轮'))
   check(actions().length === 1, 'reverting the latest turn preserves earlier messages')
+  await waitFor(() => !document.querySelector('.hui-revert-notice button').disabled)
   document.querySelector('.hui-revert-notice button').click()
   await waitFor(() => actions().length === 2)
   return passed

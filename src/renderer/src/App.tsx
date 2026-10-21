@@ -1,9 +1,10 @@
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { createOpencodeClient } from '@opencode-ai/sdk/client'
-import { createOpencodeClient as createQuestionClient, type QuestionRequest } from '@opencode-ai/sdk/v2/client'
+import { createKernelClient, type KernelClient, type QuestionRequest, type KernelSubscription } from './kernel-client'
 import { GradFlow } from 'gradflow'
 import { usePermissions } from './PermissionGate'
+import { ConnectionStatus } from './ConnectionStatus'
+import { KernelFormDialog, type FormAnswer } from './KernelFormDialog'
 import { StreamingMarkdown } from './StreamingMarkdown'
 import { SessionContextMenu, type SessionMenuTarget } from './SessionContextMenu'
 import { sameWorkspace } from './workspace-path'
@@ -14,7 +15,7 @@ import { useLiquidGlassSurface } from './LiquidGlass'
 import { MottledBackground } from './MottledBackground'
 import { reduceMessageEvents, type MessageEntry, type MessageEvent, type MessageEventType } from './stream-state'
 
-import type { ServerInfo } from '../../shared/kernel'
+import type { ServerInfo, KernelConnection } from '../../shared/kernel'
 
 interface SessionRetry {
   attempt: number
@@ -885,6 +886,10 @@ function GlassSelect({ value, onChange, options, title, disabled, empty }: {
   )
 }
 
+function QuestionDialogOrForm(props: { request: QuestionRequest; busy: boolean; onReply(answers: string[][] | FormAnswer): void; onReject(): void }) {
+  return props.request.form ? <KernelFormDialog form={props.request.form} busy={props.busy} onReply={props.onReply} onReject={props.onReject} /> : <QuestionDialog {...props} />
+}
+
 function QuestionDialog({ request, busy, onReply, onReject }: {
   request: QuestionRequest
   busy: boolean
@@ -948,14 +953,18 @@ export default function App(): React.ReactElement {
   }, [])
 
   const [server, setServer] = useState<ServerInfo | null>(null)
+  const [initializing, setInitializing] = useState(true)
+  const [connectionIssues, setConnectionIssues] = useState<Record<string, string>>({})
+  const [connection, setConnection] = useState<KernelConnection | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
+  const kernelClient = useMemo(() => connection && workspace ? createKernelClient(connection, workspace) : null, [connection, workspace])
   const [choosingWorkspace, setChoosingWorkspace] = useState(false)
   const [sessions, setSessions] = useState<any[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [unlimitedPermissions, setUnlimitedPermissions] = useState(() => {
     try { return localStorage.getItem('hui.unlimitedPermissions') === 'true' } catch { return false }
   })
-  const { dialog: permissionDialog, receive: receivePermission, reload: reloadPermissions } = usePermissions(server?.status === 'ready' ? server.url : undefined, workspace, activeId, unlimitedPermissions)
+  const { dialog: permissionDialog, receive: receivePermission, reload: reloadPermissions } = usePermissions(kernelClient, workspace, activeId, unlimitedPermissions)
   useEffect(() => {
     try { localStorage.setItem('hui.unlimitedPermissions', String(unlimitedPermissions)) } catch { /* Keep the preference for this window. */ }
   }, [unlimitedPermissions])
@@ -968,7 +977,7 @@ export default function App(): React.ReactElement {
   const attachmentEpoch = useRef(0)
   const [questions, setQuestions] = useState<QuestionRequest[]>([])
   const [answeringQuestion, setAnsweringQuestion] = useState(false)
-  const questionClientRef = useRef<ReturnType<typeof createQuestionClient> | null>(null)
+  const questionClientRef = useRef<KernelClient | null>(null)
   const questionVersion = useRef(0)
   // Track busy per session so switching to an idle session shows "发送" instead
   // of leaking another session's "停止" state; switching back restores it.
@@ -1081,11 +1090,11 @@ export default function App(): React.ReactElement {
   const [slashDismissed, setSlashDismissed] = useState(false)
   const [followingReply, setFollowingReply] = useState(true)
 
-  const clientRef = useRef<any>(null)
+  const clientRef = useRef<KernelClient | null>(null)
   const workspaceRef = useRef<string | null>(null)
   const choosingWorkspaceRef = useRef(false)
   const clientBase = useRef<string | null>(null)
-  const esRef = useRef<EventSource | null>(null)
+  const esRef = useRef<KernelSubscription | null>(null)
   const activeIdRef = useRef<string | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -1210,17 +1219,17 @@ export default function App(): React.ReactElement {
       if (c !== questionClientRef.current || sessionId !== activeIdRef.current || version !== questionVersion.current) return
       setQuestions((unwrap(result) ?? []).filter((request: QuestionRequest) => request.sessionID === sessionId))
     } catch (error) {
-      if (c === questionClientRef.current && sessionId === activeIdRef.current) console.error('load questions failed', error)
+      if (c === questionClientRef.current && sessionId === activeIdRef.current) setLastError(`加载待答问题失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }, [])
 
-  const resolveQuestion = async (request: QuestionRequest, answers?: string[][]): Promise<void> => {
+  const resolveQuestion = async (request: QuestionRequest, answers?: string[][] | FormAnswer): Promise<void> => {
     const c = questionClientRef.current
     const directory = workspaceRef.current
     if (!c || !directory || request.sessionID !== activeIdRef.current || answeringQuestion) return
     setAnsweringQuestion(true)
     try {
-      if (answers) await c.question.reply({ requestID: request.id, directory, answers }, { throwOnError: true })
+      if (answers) await c.question.reply({ requestID: request.id, directory, ...(Array.isArray(answers) ? { answers } : { answer: answers }) }, { throwOnError: true })
       else await c.question.reject({ requestID: request.id, directory }, { throwOnError: true })
       if (c === questionClientRef.current && request.sessionID === activeIdRef.current) setQuestions(previous => previous.filter(item => item.id !== request.id))
     } catch (error) {
@@ -1238,10 +1247,11 @@ export default function App(): React.ReactElement {
     try {
       const r = await c.session.list({ query: { directory }, throwOnError: true })
       if (c !== clientRef.current || version !== sessionListVersion.current) return
+      setConnectionIssues(old => { const next = { ...old }; delete next.sessions; return next })
       setSessions((unwrap(r) ?? []).filter((session: any) => sameWorkspace(session.directory, directory)
         && !deletedSessions.current.has(session.id)))
     } catch (e) {
-      console.error('list sessions failed', e)
+      if (c === clientRef.current) setConnectionIssues(old => ({ ...old, sessions: `加载会话失败：${e instanceof Error ? e.message : String(e)}` }))
     }
   }, [])
 
@@ -1278,6 +1288,7 @@ export default function App(): React.ReactElement {
         }
       }
       setModels(list)
+      setConnectionIssues(old => { const next = { ...old }; delete next.config; if (list.length) delete next.models; else next.models = '未找到可用模型，请检查 OpenCode 的模型和提供商配置。'; return next })
 
       const primary = (unwrap(agentsRes) ?? []).filter(
         (a: any) => a.mode === 'primary' && !['compaction', 'summary', 'title'].includes(a.name)
@@ -1324,11 +1335,12 @@ export default function App(): React.ReactElement {
           .filter((cmd: any) => typeof cmd?.name === 'string' && cmd.name.length > 0)
           .map((cmd: any) => ({ name: cmd.name, description: cmd.description }))
         setCommands([...builtinCommands, ...loaded.filter(command => !builtinNames.has(command.name))])
+        setConnectionIssues(old => { const next = { ...old }; delete next.commands; return next })
       } catch (e) {
-        console.error('load commands failed', e)
+        if (c === clientRef.current) setConnectionIssues(old => ({ ...old, commands: `加载命令失败：${e instanceof Error ? e.message : String(e)}` }))
       }
     } catch (e) {
-      console.error('load config failed', e)
+      if (c === clientRef.current) setConnectionIssues(old => ({ ...old, config: `加载模型或配置失败：${e instanceof Error ? e.message : String(e)}` }))
     }
   }, [])
 
@@ -1374,7 +1386,7 @@ export default function App(): React.ReactElement {
         setMessages(snapshot)
         setReverted(previous => previous?.sessionId === id && !snapshot.some(message => previous.hiddenIds.has(message.info?.id)) ? null : previous)
       } catch (e) {
-        console.error('load messages failed', e)
+        if (c === clientRef.current && epoch === sessionEpoch.current && id === activeIdRef.current) setLastError(`刷新会话历史失败：${e instanceof Error ? e.message : String(e)}`)
       }
     }, 60)
   }, [flushEvents])
@@ -1388,6 +1400,7 @@ export default function App(): React.ReactElement {
     pendingTurnKey.current = null
     revertOperation.current = null
     setRevertingId(null)
+    setLastError(null)
     const epoch = sessionEpoch.current
     const version = revision.current
     setActiveId(id)
@@ -1413,7 +1426,7 @@ export default function App(): React.ReactElement {
           ...prev.filter(message => !snapshot.some(old => old.info?.id === message.info?.id))]
       })
     } catch (e) {
-      console.error('open session failed', e)
+      if (c === clientRef.current && epoch === sessionEpoch.current && id === activeIdRef.current) setLastError(`打开会话失败，请点击会话重试：${e instanceof Error ? e.message : String(e)}`)
     }
   }, [clearEvents, flushEvents, closeSessionMenu, loadQuestions])
 
@@ -1460,6 +1473,12 @@ export default function App(): React.ReactElement {
       forgetSession(id)
       await loadSessions()
     } catch (error) {
+      const status = (error as any)?.cause?.status ?? (error as any)?.reason?.status
+      if (status === 404 && c === clientRef.current) {
+        forgetSession(id)
+        await loadSessions()
+        return
+      }
       if (c === clientRef.current && !deletedSessions.current.has(id)) {
         const message = error instanceof Error ? error.message : String(error)
         setLastError(`删除会话失败：${message}`)
@@ -1549,63 +1568,72 @@ export default function App(): React.ReactElement {
   }, [])
 
   useEffect(() => {
-    let unsub: (() => void) | undefined
-    window.api.getServerInfo().then((info) => {
-      setServer(info)
-      unsub = window.api.onServerStatus((next) => setServer(next))
-    })
-    return () => unsub?.()
+    let alive = true
+    const receive = (next: ServerInfo) => {
+      if (!alive) return
+      setServer(old => old && ((old.attempt ?? 0) > (next.attempt ?? 0) || ((old.attempt ?? 0) === (next.attempt ?? 0) && (old.sequence ?? 0) > (next.sequence ?? 0))) ? old : next)
+    }
+    const unsubscribe = window.api.onServerStatus(receive)
+    void window.api.getServerInfo().then(receive).catch(error => receive({ status: 'error', error: `读取内核状态失败：${String(error)}` }))
+    return () => { alive = false; unsubscribe() }
   }, [])
 
   useEffect(() => {
-    if (server?.status !== 'ready' || !server.url || !workspace) return
+    let alive = true
+    setConnection(null)
+    if (server?.status === 'ready' && server.url) {
+      const fallback: KernelConnection = { url: server.url, protocol: server.protocol ?? 'v1', attempt: server.attempt }
+      void (window.api.getServerConnection?.() ?? Promise.resolve(fallback)).then(next => {
+        if (alive && next && (next.attempt ?? 0) === (server.attempt ?? 0)) setConnection(next)
+      }).catch(error => { if (alive) setLastError(`读取内核连接失败：${String(error)}`) })
+    }
+    return () => { alive = false }
+  }, [server?.status, server?.url, server?.attempt])
+
+  useEffect(() => {
+    if (server?.status !== 'ready' || !server.url || !workspace || !kernelClient) return
     const url = server.url
     const context = `${url}\n${workspace}`
     if (clientBase.current === context) return
     resetWorkspaceView()
     clientBase.current = context
 
-    const client = createOpencodeClient({ baseUrl: url, directory: workspace })
-    const questionClient = createQuestionClient({ baseUrl: url, directory: workspace })
+    const client = kernelClient
+    const questionClient = client
     clientRef.current = client
     questionClientRef.current = questionClient
-    loadSessions()
-    loadConfig()
-
-    const eventUrl = new URL(`${url}/event`)
-    eventUrl.searchParams.set('directory', workspace)
-    const es = new EventSource(eventUrl.href)
-    esRef.current = es
+    setInitializing(true)
+    setConnectionIssues({})
     let opened = false
-    es.onopen = () => {
+    let loaded = false
+    const finishInitialization = () => { if (loaded && opened && clientRef.current === client) setInitializing(false) }
+    void Promise.allSettled([loadSessions(), loadConfig()]).then(() => { loaded = true; finishInitialization() })
+    const onOpen = () => {
       if (clientRef.current !== client) return
       setEventLost(false)
+      setConnectionIssues(old => { const next = { ...old }; delete next.events; return next })
       const reconnected = opened
       opened = true
+      finishInitialization()
       void reloadPermissions()
       void syncSessionStatus(client, workspace)
       // EventSource does not replay events missed while it was disconnected,
       // so reconcile history and status after a real reconnect.
       if (reconnected) {
         loadSessions()
+        loadConfig()
         refreshMessages()
+        if (activeIdRef.current) void loadQuestions(activeIdRef.current)
       }
     }
-    es.onerror = () => {
+    const onError = (error?: unknown) => {
       if (clientRef.current !== client) return
       setEventLost(true)
+      if (error instanceof Error) setConnectionIssues(old => ({ ...old, events: `事件连接失败：${error.message}` }))
       observations.disconnect()
     }
-    es.onmessage = (e) => {
+    const onEvent = (evt: { type: string; properties: any }) => {
       if (clientRef.current !== client) return
-      let evt: any
-      try {
-        evt = JSON.parse(e.data)
-      } catch {
-        return
-      }
-      if (evt?.directory && !sameWorkspace(evt.directory, workspace)) return
-      evt = evt?.payload ?? evt
       const t = evt?.type
       const p = evt?.properties ?? {}
       if (p.info?.directory && !sameWorkspace(p.info.directory, workspace)) return
@@ -1614,6 +1642,8 @@ export default function App(): React.ReactElement {
       if (t === 'permission.asked' || t === 'permission.replied') receivePermission(t, p)
 
       switch (t) {
+        case 'connection.reconcile':
+          loadSessions(); loadConfig(); refreshMessages(); void reloadPermissions(); break
         case 'question.asked':
           if (active && p.sessionID === active && p.id) {
             questionVersion.current++
@@ -1690,9 +1720,13 @@ export default function App(): React.ReactElement {
       }
     }
 
+    const es = client.subscribe({ open: onOpen, error: onError, event: onEvent })
+    esRef.current = es
+
     return () => {
       observations.disconnect()
       es.close()
+      client.dispose()
       clearEvents()
       if (esRef.current === es) esRef.current = null
       clientBase.current = null
@@ -1702,6 +1736,7 @@ export default function App(): React.ReactElement {
   }, [
     server?.status,
     server?.url,
+    kernelClient,
     workspace,
     loadSessions,
     loadConfig,
@@ -1831,7 +1866,7 @@ export default function App(): React.ReactElement {
   const send = async (): Promise<void> => {
     const text = input.trim()
     const c = clientRef.current
-    if ((!text && attachments.length === 0) || !c || !server?.url || busy || sendingRef.current) return
+    if ((!text && attachments.length === 0) || !c || !server?.url || initializing || eventLost || busy || sendingRef.current) return
 
     // A leading slash runs a configured command instead of a plain prompt.
     const commandMatch = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
@@ -1885,7 +1920,7 @@ export default function App(): React.ReactElement {
         observedSession = id
       }
       if (command) {
-        await c.session.command({ path: { id }, body: { command: command.name, arguments: commandMatch?.[2] ?? '', ...(selectedVariant ? { variant: selectedVariant } : {}) }, throwOnError: true })
+        await c.session.command({ path: { id }, body: { model: selectedModel, agent: selectedAgent, command: command.name, arguments: commandMatch?.[2] ?? '', ...(selectedVariant ? { variant: selectedVariant } : {}) }, throwOnError: true })
       } else {
         await c.session.promptAsync({ path: { id }, body, throwOnError: true })
       }
@@ -2092,7 +2127,7 @@ export default function App(): React.ReactElement {
   // Runs a client-side built-in command immediately: these take no arguments,
   // so selecting one from the slash menu executes instead of completing text.
   const runBuiltin = async (name: string): Promise<void> => {
-    if (busy || !server?.url) return
+    if (busy || !server?.url || initializing || eventLost) return
     setSlashDismissed(true)
     setInput('')
     setLastError(null)
@@ -2146,7 +2181,7 @@ export default function App(): React.ReactElement {
       {sessionMenu ? (
         <SessionContextMenu
           target={sessionMenu}
-          disabled={deletingId != null || server?.status !== 'ready'}
+          disabled={deletingId != null || server?.status !== 'ready' || initializing || eventLost}
           onDelete={deleteSession}
           onClose={closeSessionMenu}
         />
@@ -2165,6 +2200,7 @@ export default function App(): React.ReactElement {
                   : '内核启动失败'
                 : '正在启动 opencode…'}
           />
+          <ConnectionStatus server={server} loading={initializing} lost={eventLost} issues={Object.values(connectionIssues)} requests={kernelClient?.diagnostics} />
           <div ref={settingsRef} className="relative no-drag">
             <button
               type="button"
@@ -2293,7 +2329,7 @@ export default function App(): React.ReactElement {
         <aside className="glass flex w-64 shrink-0 flex-col rounded-2xl p-3" style={plainGlassFilter}>
           <button
             onClick={newSession}
-            disabled={server?.status !== 'ready' || !workspace}
+            disabled={server?.status !== 'ready' || initializing || eventLost || !workspace}
             className="mb-3 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white/90 transition hover:bg-white/16 disabled:opacity-40"
           >
             + 新建会话
@@ -2385,8 +2421,10 @@ export default function App(): React.ReactElement {
             <div ref={contentRef} className={`hui-chat-content space-y-4 ${visibleMessages.length === 0 && !busy ? 'h-full' : ''}`}>
               {visibleMessages.length === 0 && !busy ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
-                  <div className="text-lg font-medium text-white/60">开始一段对话</div>
-                  <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
+                  {server?.status !== 'ready' || initializing || eventLost || Object.keys(connectionIssues).length ? <ConnectionStatus server={server} loading={initializing} lost={eventLost} issues={Object.values(connectionIssues)} requests={kernelClient?.diagnostics} card /> : <>
+                    <div className="text-lg font-medium text-white/60">开始一段对话</div>
+                    <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
+                  </>}
                 </div>
               ) : conversation}
             </div>
@@ -2394,6 +2432,7 @@ export default function App(): React.ReactElement {
 
           <div ref={composerDockRef} className="hui-composer-dock">
             <div className="mx-auto w-full max-w-[684px]">
+              {Object.values(connectionIssues).map(issue => <div key={issue} role="alert" className="mb-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{issue}<button type="button" className="ml-2 underline" onClick={() => { void loadSessions(); void loadConfig() }}>重新加载</button></div>)}
             {reverted?.sessionId === activeId && reverted.restoreAvailable ? (
               <div className="hui-revert-notice mb-2 flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-[12px]" role="status">
                 <span>已撤回 {reverted.rounds} 轮对话及相关工作区改动</span>
@@ -2403,7 +2442,7 @@ export default function App(): React.ReactElement {
             {server?.status === 'ready' && eventLost ? (
               <div data-hui-event-lost role="status" className="mb-2 flex items-center gap-2 rounded-xl border border-sky-300/25 bg-sky-500/10 px-3 py-2 text-[12px] text-sky-100/85">
                 <span className="hui-retry-dot is-connection" aria-hidden="true" />
-                <span>与内核的连接中断，正在重连…</span>
+                <ConnectionStatus server={server} loading={initializing} lost={eventLost} issues={Object.values(connectionIssues)} requests={kernelClient?.diagnostics} notice />
               </div>
             ) : null}
             {activeRetry ? <RetryNotice retry={activeRetry} /> : null}
@@ -2459,12 +2498,12 @@ export default function App(): React.ReactElement {
                     ? '输入消息… (Enter 发送 / Shift+Enter 换行 / 输入 / 使用命令)'
                     : '等待 opencode 启动…'
                 }
-                disabled={server?.status !== 'ready' || !workspace}
+                disabled={server?.status !== 'ready' || initializing || eventLost || !workspace}
                 className="hui-composer-textarea min-h-[64px] w-full resize-none bg-transparent px-3 py-1.5 text-[13.5px] text-white/90 outline-none placeholder:text-white/35 disabled:opacity-50"
               />
               <div className="mt-1 flex items-center gap-2 px-0.5">
                 <input ref={fileInputRef} type="file" multiple className="hidden" onChange={event => { void addFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
-                <button type="button" title="添加图片或文件" aria-label="添加图片或文件" disabled={server?.status !== 'ready' || !workspace} onClick={() => fileInputRef.current?.click()} className="hui-attach-button">
+                <button type="button" title="添加图片或文件" aria-label="添加图片或文件" disabled={server?.status !== 'ready' || initializing || eventLost || !workspace} onClick={() => fileInputRef.current?.click()} className="hui-attach-button">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
                   </svg>
@@ -2473,7 +2512,7 @@ export default function App(): React.ReactElement {
                   value={selectedAgent ?? ''}
                   onChange={setSelectedAgent}
                   title="Agent"
-                  disabled={agents.length === 0 || server?.status !== 'ready'}
+                  disabled={agents.length === 0 || server?.status !== 'ready' || initializing || eventLost}
                   empty="agent…"
                   options={agents.map(agent => ({ value: agent.name, label: agent.name.charAt(0).toUpperCase() + agent.name.slice(1) }))}
                 />
@@ -2488,7 +2527,7 @@ export default function App(): React.ReactElement {
                     }
                   }}
                   title="模型"
-                  disabled={models.length === 0 || server?.status !== 'ready'}
+                  disabled={models.length === 0 || server?.status !== 'ready' || initializing || eventLost}
                   empty="加载模型…"
                   options={modelGroups.flatMap(([, items]) => items.map(model => ({ value: `${model.providerID}/${model.modelID}`, label: model.modelName, group: model.providerName })))}
                 />
@@ -2497,7 +2536,7 @@ export default function App(): React.ReactElement {
                   value={selectedVariant ?? ''}
                   onChange={(v) => setSelectedVariant(v || null)}
                   title="思考等级"
-                  disabled={activeVariants.length === 0 || server?.status !== 'ready'}
+                  disabled={activeVariants.length === 0 || server?.status !== 'ready' || initializing || eventLost}
                   empty="默认"
                   options={[{ value: '', label: '默认' }, ...activeVariants.map(name => ({ value: name, label: variantLabel(name) }))]}
                 />
@@ -2514,7 +2553,7 @@ export default function App(): React.ReactElement {
                 ) : (
                   <button
                     onClick={() => void submit()}
-                    disabled={(!input.trim() && attachments.length === 0) || server?.status !== 'ready' || !workspace}
+                    disabled={(!input.trim() && attachments.length === 0) || server?.status !== 'ready' || initializing || eventLost || !workspace}
                     className="flex h-[30px] items-center rounded-[10px] bg-white/90 px-4 text-[13px] font-semibold text-slate-900 transition hover:bg-white active:scale-[.97] disabled:opacity-40"
                   >
                     发送
@@ -2547,7 +2586,7 @@ export default function App(): React.ReactElement {
             </div>
             </div>
           </div>
-          {permissionDialog ?? (questions[0] && questions[0].sessionID === activeId ? <QuestionDialog key={questions[0].id} request={questions[0]} busy={answeringQuestion} onReply={answers => void resolveQuestion(questions[0], answers)} onReject={() => void resolveQuestion(questions[0])} /> : null)}
+          {permissionDialog ?? (questions[0] && questions[0].sessionID === activeId ? <QuestionDialogOrForm key={questions[0].id} request={questions[0]} busy={answeringQuestion} onReply={answers => void resolveQuestion(questions[0], answers)} onReject={() => void resolveQuestion(questions[0])} /> : null)}
         </main>
       </div>
     </div>

@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:stream": "node scripts/stream-benchmark.mjs",
     "test:workspace": "node --test scripts/workspace-store.test.mjs",
-    "test:kernel": "node --test scripts/kernel-launch.test.mjs scripts/kernel-client.test.mjs"
+    "test:kernel": "node --test scripts/kernel-launch.test.mjs scripts/kernel-client.test.mjs",
+    "test:kernel-ui": "node scripts/test-kernel-ui.mjs"
   },
   "keywords": [],
   "author": "",
