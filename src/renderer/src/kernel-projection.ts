@@ -30,6 +30,7 @@ function toolPart(messageID: string, sessionID: string, c: any) {
 
 /** One projection per directory/connection. Stable IDs must agree between REST history and live events. */
 export class V2Projection {
+  revision = 0
   readonly owned = new Set<string>()
   private users = new Map<string, string>()
   private messages = new Map<string, MessageEntry>()
@@ -42,19 +43,19 @@ export class V2Projection {
     if (directory && sameWorkspace(directory, this.directory)) this.owned.add(s.id)
     return { ...s, directory, time: timeV2(s.time) }
   }
-  history(sessionID: string, items: any[]): MessageEntry[] {
+  history(sessionID: string, items: any[], remember = true): MessageEntry[] {
     let parent: string | undefined
     return items.flatMap(item => {
       if (item.type === 'user') parent = item.id
-      const message = this.message(sessionID, item, parent)
+      const message = this.message(sessionID, item, parent, remember)
       return message ? [message] : []
     })
   }
-  message(sessionID: string, item: any, parent?: string): MessageEntry | null {
+  message(sessionID: string, item: any, parent?: string, remember = true): MessageEntry | null {
     const time = timeV2(item.time)
     let result: MessageEntry
     if (item.type === 'user') {
-      this.users.set(sessionID, item.id)
+      if (remember) this.users.set(sessionID, item.id)
       result = { info: { id: item.id, sessionID, role: 'user', time }, parts: [
         { id: partID(item.id, 0), messageID: item.id, sessionID, type: 'text', text: item.text ?? '' },
         ...(item.files ?? []).map((f: any, i: number) => ({ id: partID(item.id, i + 1), messageID: item.id, sessionID, type: 'file', url: f.uri, filename: f.name }))
@@ -62,14 +63,18 @@ export class V2Projection {
     } else if (item.type === 'assistant') {
       result = { info: { ...item, role: 'assistant', sessionID, parentID: parent ?? this.users.get(sessionID), time,
         providerID: item.model?.providerID, modelID: item.model?.id, tokens: usageV2(item.tokens) },
-        parts: (item.content ?? []).map((c: any, ordinal: number) => c.type === 'tool' ? toolPart(item.id, sessionID, c) : { ...c, id: partID(item.id, ordinal), messageID: item.id, sessionID }) }
+        parts: (item.content ?? []).map((c: any, ordinal: number) => {
+          if (c.type !== 'tool') return { ...c, id: partID(item.id, ordinal), messageID: item.id, sessionID }
+          if (remember && !c.time?.completed) this.tools.set(`${item.id}:tool:${c.id}`, { ...c, state: { ...c.state }, time: { ...c.time } })
+          return toolPart(item.id, sessionID, c)
+        }) }
     } else if (item.type === 'compaction') {
       result = { info: { id: item.id, sessionID, role: 'assistant', summary: true, time: { ...time, ...(item.status !== 'running' ? { completed: time.created } : {}) }, tokens: usageV2(item.tokens), modelID: item.model?.id },
         parts: [{ id: partID(item.id, 0), messageID: item.id, sessionID, type: 'text', text: item.summary ?? '' }] }
     } else if (['synthetic', 'system', 'skill', 'shell'].includes(item.type)) {
       result = { info: { id: item.id, sessionID, role: 'assistant', synthetic: true, time }, parts: [{ id: partID(item.id, 0), messageID: item.id, sessionID, type: 'text', text: item.text ?? item.output?.text ?? item.description ?? '' }] }
     } else return null
-    this.messages.set(item.id, result)
+    if (remember) this.messages.set(item.id, result)
     // A long-lived connection must not retain unbounded transcripts from every opened session.
     if (this.messages.size > 2048) this.messages.delete(this.messages.keys().next().value!)
     return result
@@ -80,6 +85,7 @@ export class V2Projection {
     const sessionID = p.sessionID ?? p.form?.sessionID
     const directory = event.location?.directory ?? (event.type === 'session.created' ? p.location?.directory : undefined)
     if (directory ? !sameWorkspace(directory, this.directory) : !sessionID || !this.owned.has(sessionID)) return []
+    this.revision++
     if (sessionID) this.owned.add(sessionID)
     const out: KernelEvent[] = []
     const emit = (type: string, properties: any) => out.push({ type, properties, directory: this.directory })
@@ -93,6 +99,7 @@ export class V2Projection {
       const old = this.messages.get(messageID)
       const info = { ...(old?.info ?? { id: messageID, sessionID, role: 'assistant', parentID: this.users.get(sessionID), time: { created: at } }), ...extra }
       this.messages.set(messageID, { info, parts: old?.parts ?? [] })
+      if (this.messages.size > 2048) this.messages.delete(this.messages.keys().next().value!)
       emit('message.updated', { info })
     }
     if (event.type === 'session.inbox.enqueued' && p.item?.type === 'user') {

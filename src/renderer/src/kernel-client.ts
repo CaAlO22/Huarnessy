@@ -11,7 +11,9 @@ export interface KernelInput { path?: { id: string }; body?: any; query?: { dire
 export interface KernelResult<T> { data: T; error?: any; response?: Response }
 type Call<T> = (input?: KernelInput) => Promise<KernelResult<T>>
 export interface KernelSubscription { close(): void }
+export interface KernelRequestDiagnostic { method: string; endpoint: string; status?: number; error?: string; at: number }
 export interface KernelClient {
+  diagnostics(): KernelRequestDiagnostic[]
   session: {
     list: Call<any[]>; create: Call<any>; get: Call<any>; delete: Call<boolean>; messages: Call<MessageEntry[]>
     status: Call<Record<string, any>>; promptAsync: Call<void>; command: Call<void>; abort: Call<void>
@@ -38,20 +40,31 @@ const result = <T>(data: T): KernelResult<T> => ({ data })
 export function createKernelClient(connection: KernelConnection, directory: string): KernelClient {
   const lifetime = new AbortController()
   const subscriptions = new Set<KernelSubscription>()
+  const diagnostics: KernelRequestDiagnostic[] = []
+  const record = (item: KernelRequestDiagnostic) => { diagnostics.push(item); if (diagnostics.length > 50) diagnostics.shift() }
   // Request cancellation is connection/directory scoped; only reads have a bounded request deadline.
-  const requestFetch: typeof fetch = (input, init) => {
+  const requestFetch: typeof fetch = async (input, init) => {
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
     const accept = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get('accept')
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
     const signals = [lifetime.signal, ...(signal ? [signal] : [])]
     if (method === 'GET' && accept !== 'text/event-stream') signals.push(AbortSignal.timeout(15000))
-    return fetch(input, { ...init, signal: AbortSignal.any(signals) })
+    const endpoint = new URL(input instanceof Request ? input.url : String(input)).pathname
+    try {
+      const response = await fetch(input, { ...init, signal: AbortSignal.any(signals) })
+      record({ method, endpoint, status: response.status, at: Date.now() })
+      return response
+    } catch (error) {
+      if (!lifetime.signal.aborted) record({ method, endpoint, error: error instanceof Error ? error.name : '网络请求失败', at: Date.now() })
+      throw error
+    }
   }
   const dispose = () => { lifetime.abort(); subscriptions.forEach(s => s.close()); subscriptions.clear() }
   if (connection.protocol === 'v1') {
     const sdk = legacyClient({ baseUrl: connection.url, directory, throwOnError: true, fetch: requestFetch })
     const interactions = legacyInteractions({ baseUrl: connection.url, directory, throwOnError: true, fetch: requestFetch })
     return {
+      diagnostics: () => diagnostics.slice(),
       session: sdk.session as unknown as KernelClient['session'], config: sdk.config as unknown as KernelClient['config'],
       app: sdk.app as unknown as KernelClient['app'], command: sdk.command as unknown as KernelClient['command'],
       permission: interactions.permission as unknown as KernelClient['permission'], question: interactions.question as unknown as KernelClient['question'], dispose,
@@ -120,6 +133,7 @@ export function createKernelClient(connection: KernelConnection, directory: stri
     }
   }
   const client: KernelClient = {
+    diagnostics: () => diagnostics.slice(),
     dispose,
     session: {
       list: async () => result((await pages(cursor => sdk.session.list({ directory, order: 'desc', limit: 100, cursor }))).map(s => projection.session(s)).filter(s => sameWorkspace(s.directory, directory))),
@@ -132,8 +146,10 @@ export function createKernelClient(connection: KernelConnection, directory: stri
       },
       messages: async input => {
         const sessionID = await scope(input)
+        const revision = projection.revision
         const messages = await pages(cursor => sdk.message.list({ sessionID, order: 'asc', limit: 100, cursor }))
-        return result(projection.history(sessionID, messages))
+        // A late REST response must not replace metadata already received on the live stream.
+        return result(projection.history(sessionID, messages, revision === projection.revision))
       },
       status: async () => {
         const active = await sdk.session.active()
@@ -171,8 +187,15 @@ export function createKernelClient(connection: KernelConnection, directory: stri
         return result(undefined)
       },
       abort: async input => { await sdk.session.interrupt({ sessionID: await scope(input), resume: false }); return result(undefined) },
-      summarize: async input => { await sdk.session.compact({ sessionID: await scope(input) }); return result(undefined) },
-      revert: async input => { const revert = await sdk.session.revert.stage({ sessionID: await scope(input), messageID: input?.body?.messageID }); return result({ revert }) },
+      summarize: async input => {
+        const sessionID = await scope(input)
+        if (input?.body) await select(sessionID, { model: input.body })
+        await sdk.session.compact({ sessionID })
+        // V2 acknowledges admission immediately; preserve the UI's completion/busy contract.
+        await sdk.session.wait({ sessionID })
+        return result(undefined)
+      },
+      revert: async input => { const revert = await sdk.session.revert.stage({ sessionID: await scope(input), messageID: input?.body?.messageID, files: true }); return result({ revert }) },
       unrevert: async input => { await sdk.session.revert.clear({ sessionID: await scope(input) }); return result(undefined) }
     },
     config: {
@@ -248,10 +271,12 @@ export function createKernelClient(connection: KernelConnection, directory: stri
       emitters.add(handlers.event)
       void (async () => {
         while (!signal.aborted) {
+          const handshake = new AbortController()
+          const handshakeTimer = setTimeout(() => handshake.abort(new Error('内核事件连接超时（15 秒）')), 15000)
           try {
-            for await (const raw of sdk.event.subscribe({ signal })) {
+            for await (const raw of sdk.event.subscribe({ signal: AbortSignal.any([signal, handshake.signal]) })) {
               if (signal.aborted) break
-              if (raw.type === 'server.connected') { retry = 0; handlers.open(); continue }
+              if (raw.type === 'server.connected') { clearTimeout(handshakeTimer); retry = 0; handlers.open(); continue }
               for (const event of projection.events(raw)) {
                 if (event.type === 'permission.asked') permissions.set(event.properties.id, event.properties)
                 if (event.type === 'question.asked') questions.set(event.properties.id, event.properties)
@@ -259,7 +284,8 @@ export function createKernelClient(connection: KernelConnection, directory: stri
               }
             }
             if (!signal.aborted) throw new Error('内核事件连接已关闭')
-          } catch (error) { if (signal.aborted) break; handlers.error(error) }
+          } catch (error) { if (signal.aborted) break; handlers.error(handshake.signal.aborted ? handshake.signal.reason : error) }
+          finally { clearTimeout(handshakeTimer) }
           const ms = [1000, 2000, 4000, 8000, 10000][Math.min(retry++, 4)]
           await new Promise<void>(resolve => {
             const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
