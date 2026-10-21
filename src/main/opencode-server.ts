@@ -2,6 +2,7 @@ import { spawn, spawnSync, execFile, type ChildProcess } from 'node:child_proces
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
 import net from 'node:net'
 import type { ServerInfo, ServerErrorKind, KernelCandidate, KernelConnection } from '../shared/kernel'
 export type { ServerInfo } from '../shared/kernel'
@@ -16,7 +17,7 @@ export function getServerInfo(): ServerInfo { return current }
 export function getServerConnection(): KernelConnection | null { return current.status === 'ready' ? connection : null }
 
 export function redactLog(text: string, secret?: string): string {
-  let clean = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+  let clean = text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
   if (secret) clean = clean.split(secret).join('[已隐藏]')
   return clean.replace(/(authorization\s*[:=]\s*)(?:Basic|Bearer)\s+\S+/gi, '$1[已隐藏]')
     .replace(/((?:password|api[_-]?key|token|secret)\s*["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, '$1[已隐藏]')
@@ -119,15 +120,24 @@ export async function startServer(onUpdate: (info: ServerInfo) => void, manual?:
   }
   current = { status: 'starting', phase: 'discovering', attempt, sequence: 0, startedAt: Date.now(), stages: [{ phase: 'discovering', at: Date.now() }], logs: [] }
   onUpdate(current)
-  const log = (channel: string, data: Buffer) => {
+  const pendingLines = new Map<string, string>()
+  const decoders = new Map<string, StringDecoder>()
+  const log = (channel: string, data?: Buffer) => {
     if (!valid()) return
+    const decoder = decoders.get(channel) ?? new StringDecoder('utf8')
+    decoders.set(channel, decoder)
+    const text = (pendingLines.get(channel) ?? '') + (data ? decoder.write(data) : decoder.end())
+    const lines = text.split(/\r?\n/)
+    const pending = data ? lines.pop() ?? '' : ''
+    // Wait for complete lines before publishing: a credential can span stdout chunks.
+    pendingLines.set(channel, pending.length > 65536 ? '[日志行超过限制，已省略]' : pending)
     // Retain real startup errors (including SQLite schema failures), bounded by both lines and bytes.
-    let logs = [...(current.logs ?? []), ...redactLog(data.toString(), secret).split(/\r?\n/).filter(Boolean).map(line => `[${channel}] ${line}`)].slice(-200)
+    let logs = [...(current.logs ?? []), ...redactLog(lines.join('\n'), secret).split(/\r?\n/).filter(Boolean).map(line => `[${channel}] ${line}`)].slice(-200)
     while (Buffer.byteLength(logs.join('\n')) > 65536) {
       if (logs.length === 1) { logs = [logs[0].slice(-16000)]; break }
       logs.shift()
     }
-    update({ logs })
+    if (lines.some(Boolean)) update({ logs })
   }
   try {
     const candidates = await discoverKernels(manual, abort.signal)
@@ -156,7 +166,7 @@ export async function startServer(onUpdate: (info: ServerInfo) => void, manual?:
       probe.on('close', code => { finish(); code === 0 ? resolve(text) : reject(new Error(`版本探测退出码 ${code}：${text}`)) })
     }).catch(e => { if (valid()) fail('version', '无法识别内核版本', String(e)); return null })
     if (!valid() || output === null) return current
-    const version = output.match(/\b([12]\.\d+\.\d+(?:-[\w.-]+)?)/)?.[1]
+    const version = redactLog(output).match(/(?:^|[\s:=])v?([12]\.\d+\.\d+(?:-[\w.-]+)?)(?=\s|$)/m)?.[1]
     if (!version) { fail('version', '不支持或无法识别的内核版本', output); return current }
     const protocol = version.startsWith('2.') ? 'v2' : 'v1'
     update({ version, protocol, phase: 'launching' })
@@ -183,6 +193,7 @@ export async function startServer(onUpdate: (info: ServerInfo) => void, manual?:
     child.on('exit', code => {
       exited = true
       if (!valid()) return
+      log('stdout'); log('stderr')
       update({ exitCode: code })
       if (current.status === 'ready') fail('exited', `内核进程已退出（退出码 ${code ?? '未知'}）`)
     })
@@ -198,7 +209,8 @@ export async function startServer(onUpdate: (info: ServerInfo) => void, manual?:
         if (response.status === 401 || response.status === 403) { fail('auth', '内核鉴权失败'); return current }
         if (response.status === 404) { fail('protocol', '内核接口与检测到的版本不兼容'); return current }
         if (response.ok) {
-          const body = await response.json()
+          let body: any
+          try { body = await response.json() } catch { fail('protocol', '内核健康接口返回了无效的 JSON 数据'); return current }
           if (typeof body.version !== 'string' || (protocol === 'v1' && body.healthy !== true) || !body.version.startsWith(protocol === 'v2' ? '2.' : '1.')) { fail('protocol', '内核返回了不兼容的健康检查数据'); return current }
           if (!valid() || exited || spawnError) return current
           connection = { attempt, url, protocol, headers }

@@ -9,7 +9,7 @@ async function importTypeScript(file) {
   const { code } = await transformWithEsbuild(await readFile(new URL(file, import.meta.url), 'utf8'), file, { loader: 'ts', format: 'esm' })
   return import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))
 }
-const { resolveOpencodeBin, commandOnPath, discoverKernels, startServer, stopServer, getServerConnection, redactLog } = await importTypeScript('../src/main/opencode-server.ts')
+const { resolveOpencodeBin, commandOnPath, discoverKernels, startServer, stopServer, getServerInfo, getServerConnection, redactLog } = await importTypeScript('../src/main/opencode-server.ts')
 const { loadKernelPath, saveKernelPath } = await importTypeScript('../src/main/kernel-settings.ts')
 
 const fixture = await mkdtemp(join(tmpdir(), 'huarnessy-kernel-'))
@@ -49,11 +49,13 @@ test('真实子进程验证两版健康接口、鉴权、中文空格路径和�
   await writeFile(script, `
 const http = require('node:http')
 const version = process.env.HUI_TEST_VERSION || '1.18.34'
-if (process.argv.includes('--version')) { console.log(version); process.exit(0) }
+if (process.argv.includes('--version')) { setTimeout(() => { console.log(version.startsWith('2.') ? 'opencode v' + version : version); process.exit(0) }, Number(process.env.HUI_TEST_DELAY || 0)); return }
 if (process.env.HUI_TEST_EXIT) { console.error('SQLiteError: test schema'); process.exit(7) }
 const port = Number(process.argv[process.argv.indexOf('--port') + 1])
 http.createServer((req, res) => {
   const v2 = version.startsWith('2.')
+  if (process.env.HUI_TEST_STATUS) { res.writeHead(Number(process.env.HUI_TEST_STATUS)).end(); return }
+  if (process.env.HUI_TEST_MALFORMED) { res.writeHead(200).end('not-json'); return }
   if (req.url !== (v2 ? '/api/info' : '/global/health')) { res.writeHead(404).end(); return }
   if (v2 && req.headers.authorization !== 'Basic ' + Buffer.from('opencode:' + process.env.OPENCODE_PASSWORD).toString('base64')) { res.writeHead(401).end(); return }
   res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ version, healthy: true }))
@@ -61,7 +63,8 @@ http.createServer((req, res) => {
 `)
   const bin = join(dir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')
   await writeFile(bin, process.platform === 'win32' ? `@"${process.execPath}" "%~dp0fake.cjs" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 })
-  const saved = { version: process.env.HUI_TEST_VERSION, exit: process.env.HUI_TEST_EXIT }
+  const keys = ['HUI_TEST_VERSION', 'HUI_TEST_EXIT', 'HUI_TEST_DELAY', 'HUI_TEST_STATUS', 'HUI_TEST_MALFORMED']
+  const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]))
   try {
     for (const version of ['1.18.34', '2.0.32']) {
       process.env.HUI_TEST_VERSION = version
@@ -74,6 +77,27 @@ http.createServer((req, res) => {
       if (version.startsWith('2')) assert.ok(credentials.headers.Authorization.startsWith('Basic '))
       stopServer()
     }
+    for (const [status, kind] of [['401', 'auth'], ['404', 'protocol']]) {
+      process.env.HUI_TEST_STATUS = status
+      const failed = await startServer(() => {}, bin)
+      assert.equal(failed.errorKind, kind)
+      assert.equal(failed.lastProbe.status, Number(status))
+    }
+    delete process.env.HUI_TEST_STATUS
+    process.env.HUI_TEST_MALFORMED = '1'
+    assert.equal((await startServer(() => {}, bin)).errorKind, 'protocol')
+    delete process.env.HUI_TEST_MALFORMED
+    process.env.HUI_TEST_DELAY = '1500'
+    const oldUpdates = []
+    const old = startServer(info => oldUpdates.push(info), bin)
+    while (!oldUpdates.some(s => s.phase === 'version')) await new Promise(r => setTimeout(r, 10))
+    const count = oldUpdates.length
+    const newer = await startServer(() => {}, join(fixture, 'missing-new.exe'))
+    await old
+    assert.equal(oldUpdates.length, count, '旧代次取消后不能继续发布状态')
+    assert.equal(getServerInfo().attempt, newer.attempt)
+    assert.equal(getServerInfo().errorKind, 'not-found')
+    delete process.env.HUI_TEST_DELAY
     process.env.HUI_TEST_EXIT = '1'
     const info = await startServer(() => {}, bin)
     assert.equal(info.errorKind, 'exited')
@@ -81,7 +105,7 @@ http.createServer((req, res) => {
     assert.match(info.logs.join('\n'), /SQLiteError/)
   } finally {
     stopServer()
-    for (const [key, value] of [['HUI_TEST_VERSION', saved.version], ['HUI_TEST_EXIT', saved.exit]]) {
+    for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
