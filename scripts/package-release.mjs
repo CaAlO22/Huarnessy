@@ -1,9 +1,7 @@
 import { cpSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { createRequire } from 'node:module'
+import { dirname, join, relative, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const require = createRequire(import.meta.url)
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 
@@ -22,6 +20,10 @@ if (!existsSync(join(electronDist, 'electron.exe'))) {
 const appName = 'Huarnessy'
 const releaseRoot = join(repoRoot, 'release')
 const target = join(releaseRoot, `${appName}-v${pkg.version}-win-x64`)
+const targetRelative = relative(releaseRoot, target)
+if (!targetRelative || targetRelative.startsWith('..') || isAbsolute(targetRelative)) {
+  throw new Error('发行目录必须位于 release 目录内')
+}
 
 rmSync(target, { recursive: true, force: true })
 mkdirSync(target, { recursive: true })
@@ -38,7 +40,10 @@ writeFileSync(
   join(appDir, 'package.json'),
   JSON.stringify({ name: 'huarnessy', productName: appName, version: pkg.version, main: 'out/main/index.js' }, null, 2)
 )
-cpSync(outDir, join(appDir, 'out'), { recursive: true })
+for (const directory of ['main', 'preload', 'renderer']) {
+  cpSync(join(outDir, directory), join(appDir, 'out', directory), { recursive: true })
+}
+cpSync(join(repoRoot, 'RELEASE_NOTES.md'), join(target, 'RELEASE_NOTES.md'))
 
 writeFileSync(join(target, 'README.txt'), [
   `${appName} v${pkg.version}（Windows x64 便携版）`,

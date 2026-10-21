@@ -123,6 +123,8 @@ npm run test:kernel    # 内核二进制解析与启动失败分类的单元验�
 npm run package:release # 构建并组装 release/Huarnessy-v<版本>-win-x64 便携发行版
 ```
 
+便携发行包仅包含 `out/main`、`out/preload` 和 `out/renderer`，避免把测试日志、截图等构建目录临时文件带入发行包；根目录附带 `RELEASE_NOTES.md`。当前发行版本为 v0.2.0。
+
 - `npm run dev` 会监听 `src/`：改渲染层触发 HMR 重载、改主进程直接重启 Electron。若正用该窗口与本项目对话，源码改动会打断当前窗口。需要一边改源码一边保持对话窗口存活时，用 `npm run app`（或 `npm run app:build`）：`scripts/run-standalone.mjs` 把 `out/` 拷贝到仓库外的稳定目录（Windows 为 `%LOCALAPPDATA%\Huarnessy\standalone`）再启动，之后 `npm run build` 覆盖仓库内 `out/` 不会影响运行中的实例。该快照仍是独立进程，带自己的 `opencode serve` 内核，与 VSCode 内的 opencode 实例互不影响。要看到新的源码改动，需重新执行 `npm run app:build` 并接受新窗口替换旧窗口。
 
 - **VSCode 调试**：F5 → `Debug All`（Main 用 node 调试、Renderer 用 chrome 9222 attach）。
