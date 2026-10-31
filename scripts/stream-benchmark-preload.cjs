@@ -44,7 +44,7 @@ window.fetch = async (url, options) => {
   const headers = new Headers(options?.headers ?? (typeof url === 'string' ? undefined : url.headers))
   const directory = requestUrl.searchParams.get('directory') ?? decodeURIComponent(headers.get('x-opencode-directory') ?? '')
   const body = method === 'POST' ? JSON.parse((options?.body ?? (typeof url === 'string' ? '{}' : await url.text())) || '{}') : undefined
-  window.benchRequests.push({ method, path, directory, body })
+  window.benchRequests.push({ method, path, directory, query: Object.fromEntries(requestUrl.searchParams), body })
   if (path === '/session' && method === 'POST') {
     if (window.benchHoldCreate === directory) await new Promise(resolve => { window.benchReleaseCreate = resolve })
     const session = { id: `created-${++created}`, title: body.title ?? `New session - ${new Date().toISOString()}`, directory }
@@ -119,6 +119,17 @@ window.fetch = async (url, options) => {
     { name: 'compact', description: '压缩当前会话的上下文', template: '' },
     { name: 'review', description: '审查当前改动', template: '' }
   ]
+  else if (path === '/file') data = [
+    { name: 'docs', path: 'docs', absolute: 'x', type: 'directory', ignored: false },
+    { name: 'src', path: 'src', absolute: 'x', type: 'directory', ignored: false },
+    { name: 'README.md', path: 'README.md', absolute: 'x', type: 'file', ignored: false },
+    { name: 'package.json', path: 'package.json', absolute: 'x', type: 'file', ignored: false },
+    { name: 'node_modules', path: 'node_modules', absolute: 'x', type: 'directory', ignored: true }
+  ]
+  else if (path === '/find/file') {
+    const query = (requestUrl.searchParams.get('query') ?? '').toLowerCase()
+    data = ['README.md', 'docs/guide.md', 'src/App.tsx', 'src/main.ts'].filter(item => item.toLowerCase().includes(query))
+  }
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
 }
 window.EventSource = class {

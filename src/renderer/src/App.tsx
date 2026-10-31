@@ -1,6 +1,6 @@
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { createKernelClient, type KernelClient, type QuestionRequest, type KernelSubscription } from './kernel-client'
+import { createKernelClient, type KernelClient, type KernelFileEntry, type QuestionRequest, type KernelSubscription } from './kernel-client'
 import { GradFlow } from 'gradflow'
 import { usePermissions } from './PermissionGate'
 import { ConnectionStatus } from './ConnectionStatus'
@@ -90,6 +90,43 @@ const builtinCommands: CommandOption[] = [
   { name: 'undo', description: '撤回上一轮对话', builtin: true },
   { name: 'redo', description: '恢复撤回的对话', builtin: true }
 ]
+
+// The composer opens a file-reference panel while the caret sits right after an
+// `@token`. The token starts at text or whitespace so e-mail-like `foo@bar`
+// does not trigger it; slashes are allowed so users can type directory paths.
+const atTokenPattern = /(?:^|\s)@([^\s@]*)$/
+interface AtToken { start: number; end: number; query: string }
+
+// Subsequence match used to color the characters the user actually typed
+// inside a server-returned path (e.g. `md` inside `docs/guide.md`).
+function fuzzyHighlightSegments(text: string, query: string): Array<{ text: string; hit: boolean }> {
+  if (!query) return [{ text, hit: false }]
+  const lower = text.toLowerCase()
+  const needle = query.toLowerCase()
+  const segments: Array<{ text: string; hit: boolean }> = []
+  let qi = 0
+  let last = 0
+  for (let i = 0; i < text.length && qi < needle.length; i++) {
+    if (lower[i] !== needle[qi]) continue
+    if (i > last) segments.push({ text: text.slice(last, i), hit: false })
+    segments.push({ text: text[i], hit: true })
+    last = i + 1
+    qi++
+  }
+  // The server fuzzy-matches on its own; when the query is not even a
+  // subsequence (different transliteration), show the path without highlights.
+  if (qi < needle.length) return [{ text, hit: false }]
+  if (last < text.length) segments.push({ text: text.slice(last), hit: false })
+  return segments
+}
+
+// Kernel paths may use either separator; the panel shows workspace-relative
+// POSIX paths and never leaves the workspace root.
+function normalizeFileEntries(entries: KernelFileEntry[]): KernelFileEntry[] {
+  return entries
+    .map(entry => ({ path: entry.path.replace(/\\/g, '/').replace(/\/+$/, ''), type: entry.type }))
+    .filter(entry => entry.path.length > 0 && !entry.path.startsWith('/') && !entry.path.split('/').includes('..'))
+}
 
 interface SelectedModel {
   providerID: string
@@ -1088,6 +1125,11 @@ export default function App(): React.ReactElement {
   const [commands, setCommands] = useState<CommandOption[]>([])
   const [slashHighlight, setSlashHighlight] = useState(0)
   const [slashDismissed, setSlashDismissed] = useState(false)
+  const [atQuery, setAtQuery] = useState<string | null>(null)
+  const [atResults, setAtResults] = useState<KernelFileEntry[]>([])
+  const [atLoading, setAtLoading] = useState(false)
+  const [atHighlight, setAtHighlight] = useState(0)
+  const [atDismissed, setAtDismissed] = useState(false)
   const [followingReply, setFollowingReply] = useState(true)
 
   const clientRef = useRef<KernelClient | null>(null)
@@ -1099,6 +1141,10 @@ export default function App(): React.ReactElement {
   const commandsLoading = useRef(false)
   const commandsFailed = useRef(false)
   const commandEpoch = useRef(0)
+  const atTokenRef = useRef<AtToken | null>(null)
+  const atDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const atRequestEpoch = useRef(0)
+  const atRootCache = useRef<{ directory: string; entries: KernelFileEntry[] } | null>(null)
   const esRef = useRef<KernelSubscription | null>(null)
   const activeIdRef = useRef<string | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1181,6 +1227,85 @@ export default function App(): React.ReactElement {
     setInput(`/${command.name} `)
     setSlashDismissed(true)
     requestAnimationFrame(() => textareaRef.current?.focus())
+  }
+
+  // The @ panel is caret-based (unlike the slash menu, which only matches the
+  // whole input): it opens whenever the caret sits right after an `@token`,
+  // anywhere in the text. File lists are fetched from the kernel at reference
+  // time, so they reflect the workspace as it is now, not at open time.
+  const syncAtToken = useCallback((text: string, caret: number): void => {
+    const clamped = Math.max(0, Math.min(caret, text.length))
+    const match = atTokenPattern.exec(text.slice(0, clamped))
+    atTokenRef.current = match ? { start: clamped - match[1].length - 1, end: clamped, query: match[1] } : null
+    setAtQuery(atTokenRef.current ? atTokenRef.current.query : null)
+  }, [])
+
+  useEffect(() => {
+    const textarea = textareaRef.current
+    syncAtToken(input, textarea ? textarea.selectionStart : input.length)
+  }, [input, syncAtToken])
+
+  useEffect(() => { setAtHighlight(0) }, [atQuery])
+  useEffect(() => { setAtDismissed(false) }, [input])
+
+  const atOpen = atQuery !== null && !atDismissed && (atResults.length > 0 || atLoading)
+
+  // An empty query lists the workspace root (directories first); anything else
+  // asks the kernel for a fuzzy match. Requests are debounced, and late
+  // responses from superseded queries or a previous workspace/client are dropped.
+  useEffect(() => {
+    if (atDebounceTimer.current) { clearTimeout(atDebounceTimer.current); atDebounceTimer.current = null }
+    if (atQuery === null) {
+      atRootCache.current = null
+      setAtResults([])
+      setAtLoading(false)
+      return
+    }
+    const c = clientRef.current
+    const directory = workspaceRef.current
+    if (!c || !directory || server?.status !== 'ready') return
+    const epoch = ++atRequestEpoch.current
+    const load = async (): Promise<void> => {
+      if (atQuery === '') {
+        const cached = atRootCache.current
+        if (cached && sameWorkspace(cached.directory, directory)) {
+          if (epoch === atRequestEpoch.current) setAtResults(cached.entries.slice(0, 10))
+          return
+        }
+        const response = await c.file.list({ directory, path: '.' })
+        const entries = normalizeFileEntries(response.data ?? [])
+          .sort((a, b) => (a.type === b.type ? a.path.localeCompare(b.path) : a.type === 'directory' ? -1 : 1))
+        atRootCache.current = { directory, entries }
+        if (epoch === atRequestEpoch.current) setAtResults(entries.slice(0, 10))
+        return
+      }
+      const response = await c.file.find({ directory, query: atQuery, limit: 30 })
+      if (epoch !== atRequestEpoch.current) return
+      setAtResults(normalizeFileEntries(response.data ?? []).slice(0, 10))
+    }
+    setAtLoading(true)
+    atDebounceTimer.current = setTimeout(() => {
+      atDebounceTimer.current = null
+      void load().catch(() => { if (epoch === atRequestEpoch.current) setAtResults([]) })
+    }, atQuery === '' ? 0 : 120)
+    return () => {
+      if (atDebounceTimer.current) { clearTimeout(atDebounceTimer.current); atDebounceTimer.current = null }
+      if (epoch === atRequestEpoch.current) setAtLoading(false)
+    }
+  }, [atQuery, workspace, server?.status])
+
+  const applyFileReference = (entry: KernelFileEntry): void => {
+    const token = atTokenRef.current
+    if (!token) return
+    const inserted = `@${entry.type === 'directory' ? `${entry.path}/` : entry.path} `
+    const next = input.slice(0, token.start) + inserted + input.slice(token.end)
+    const caret = token.start + inserted.length
+    setAtDismissed(true)
+    setInput(next)
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current
+      if (textarea) { textarea.focus(); textarea.setSelectionRange(caret, caret) }
+    })
   }
 
   useLayoutEffect(() => {
@@ -1537,6 +1662,14 @@ export default function App(): React.ReactElement {
     commandRetryAttempt.current = 0
     commandsLoading.current = false
     commandsFailed.current = false
+    if (atDebounceTimer.current) { clearTimeout(atDebounceTimer.current); atDebounceTimer.current = null }
+    atRequestEpoch.current++
+    atRootCache.current = null
+    atTokenRef.current = null
+    setAtQuery(null)
+    setAtResults([])
+    setAtLoading(false)
+    setAtDismissed(false)
     esRef.current?.close()
     esRef.current = null
     clearEvents()
@@ -2524,7 +2657,23 @@ export default function App(): React.ReactElement {
                   const files = Array.from(event.clipboardData.files)
                   if (files.length) { event.preventDefault(); void addFiles(files) }
                 }}
+                onSelect={(event) => {
+                  const textarea = event.currentTarget
+                  syncAtToken(textarea.value, textarea.selectionStart ?? textarea.value.length)
+                }}
                 onKeyDown={(e) => {
+                  if (atOpen) {
+                    const last = atResults.length - 1
+                    const current = Math.min(atHighlight, last)
+                    if (e.key === 'ArrowDown') { e.preventDefault(); if (last >= 0) setAtHighlight((current + 1) % atResults.length); return }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); if (last >= 0) setAtHighlight((current - 1 + atResults.length) % atResults.length); return }
+                    if (e.key === 'Tab' || e.key === 'Enter') {
+                      e.preventDefault()
+                      if (last >= 0) applyFileReference(atResults[current])
+                      return
+                    }
+                    if (e.key === 'Escape') { e.preventDefault(); setAtDismissed(true); return }
+                  }
                   if (slashOpen) {
                     const last = slashResults.length - 1
                     const current = Math.min(slashHighlight, last)
@@ -2541,7 +2690,7 @@ export default function App(): React.ReactElement {
                 rows={1}
                 placeholder={
                   server?.status === 'ready'
-                    ? '输入消息… (Enter 发送 / Shift+Enter 换行 / 输入 / 使用命令)'
+                    ? '输入消息… (Enter 发送 / Shift+Enter 换行 / 输入 / 使用命令 / 输入 @ 引用文件)'
                     : '等待 opencode 启动…'
                 }
                 disabled={server?.status !== 'ready' || initializing || eventLost || !workspace}
@@ -2626,6 +2775,34 @@ export default function App(): React.ReactElement {
                       {command.description ? <span className="hui-slash-desc">{command.description}</span> : null}
                     </button>
                   ))}
+                </div>
+              </div>
+            ) : null}
+            {atOpen ? (
+              <div className="hui-slash-menu hui-at-menu" role="listbox" aria-label="文件引用">
+                <div className="hui-slash-scroll">
+                  {atResults.map((entry, index) => (
+                    <button
+                      key={`${entry.type}:${entry.path}`}
+                      type="button"
+                      role="option"
+                      aria-selected={index === atHighlight}
+                      className="hui-slash-option hui-at-option"
+                      data-focused={index === atHighlight}
+                      onMouseEnter={() => setAtHighlight(index)}
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => applyFileReference(entry)}
+                    >
+                      <span className="hui-slash-name hui-at-name">
+                        <span className="hui-at-icon" aria-hidden="true">{entry.type === 'directory' ? '▸' : '▤'}</span>
+                        {fuzzyHighlightSegments(entry.path, atQuery ?? '').map((segment, position) => segment.hit
+                          ? <span key={position} className="hui-at-hit">{segment.text}</span>
+                          : <span key={position}>{segment.text}</span>)}
+                        {entry.type === 'directory' ? '/' : null}
+                      </span>
+                    </button>
+                  ))}
+                  {atLoading && atResults.length === 0 ? <div className="hui-at-loading">正在搜索工作空间文件…</div> : null}
                 </div>
               </div>
             ) : null}

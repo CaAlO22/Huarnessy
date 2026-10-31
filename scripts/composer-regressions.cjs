@@ -114,6 +114,54 @@ module.exports = async () => {
   window.benchEmit('session.idle', { sessionID: 'benchmark-session' })
   await new Promise(resolve => setTimeout(resolve, 40))
 
+  // @ opens a file-reference panel fed by the kernel at reference time.
+  const atOptions = () => Array.from(document.querySelectorAll('.hui-at-option'))
+  setText('@')
+  await waitFor(() => !!document.querySelector('.hui-at-menu'))
+  check(!document.querySelector('.hui-composer .hui-at-menu'), 'the @ panel is a sibling of the composer bubble, not inside its backdrop root')
+  await waitFor(() => atOptions().length === 4)
+  check(atOptions()[0].textContent.includes('docs') && atOptions()[1].textContent.includes('src'), 'an empty @ lists workspace directories before files')
+  check(!document.querySelector('.hui-at-menu').textContent.includes('node_modules'), 'ignored directories stay out of the @ listing')
+  check(window.benchRequests.some(request => request.path === '/file' && request.directory === window.benchWorkspace), 'the @ root listing carries the active workspace directory')
+
+  setText('@md')
+  await waitFor(() => atOptions().length === 2)
+  check(window.benchRequests.some(request => request.path === '/find/file' && request.query?.query === 'md' && request.query?.dirs === 'true'), 'typing after @ asks the kernel for a fuzzy file match')
+  const atHits = atOptions()[0].querySelectorAll('.hui-at-hit')
+  check(atHits.length >= 1 && Array.from(atHits).map(hit => hit.textContent).join('').toLowerCase() === 'md', 'the characters matched by the fuzzy query are highlighted')
+
+  check(atOptions()[0].getAttribute('data-focused') === 'true', 'the first @ option starts focused')
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  await waitFor(() => atOptions()[1].getAttribute('data-focused') === 'true')
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+  await waitFor(() => atOptions()[0].getAttribute('data-focused') === 'true')
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await waitFor(() => textarea.value === '@README.md ')
+  check(!document.querySelector('.hui-at-menu'), 'Enter completes the @ reference into the composer and closes the panel')
+
+  setText('@re')
+  await waitFor(() => atOptions().length >= 1)
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await waitFor(() => !document.querySelector('.hui-at-menu'))
+  check(textarea.value === '@re', 'Escape closes the @ panel but keeps the typed text')
+
+  setText('看下 @src/')
+  await waitFor(() => atOptions().length === 2)
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
+  await waitFor(() => textarea.value === '看下 @src/App.tsx ')
+  check(!document.querySelector('.hui-at-menu'), 'an @ token mid-text completes in place without touching the rest of the message')
+
+  setText('/')
+  await waitFor(() => !!document.querySelector('.hui-slash-menu'))
+  check(!document.querySelector('.hui-at-menu'), 'a slash does not open the file panel')
+  setText('')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  setText('a@b')
+  await new Promise(resolve => setTimeout(resolve, 80))
+  check(!document.querySelector('.hui-at-menu'), 'an @ inside a word does not open the file panel')
+  setText('')
+  await new Promise(resolve => setTimeout(resolve, 20))
+
   // Header context ring reflects the model recorded on the reply (falling back
   // to the composer selection) and ignores empty token reports.
   const meter = document.querySelector('.hui-context-meter')
