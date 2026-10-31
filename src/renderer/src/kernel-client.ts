@@ -12,8 +12,18 @@ export interface KernelResult<T> { data: T; error?: any; response?: Response }
 type Call<T> = (input?: KernelInput) => Promise<KernelResult<T>>
 export interface KernelSubscription { close(): void }
 export interface KernelRequestDiagnostic { method: string; endpoint: string; status?: number; error?: string; at: number }
+// Workspace file entries for the composer's @ reference panel. Paths are
+// relative to the client's bound directory.
+export interface KernelFileEntry { path: string; type: 'file' | 'directory' }
+export interface KernelFileListInput { directory?: string; path: string }
+export interface KernelFileFindInput { directory?: string; query: string; limit?: number }
+
 export interface KernelClient {
   diagnostics(): KernelRequestDiagnostic[]
+  file: {
+    list(input: KernelFileListInput): Promise<KernelResult<KernelFileEntry[]>>
+    find(input: KernelFileFindInput): Promise<KernelResult<KernelFileEntry[]>>
+  }
   session: {
     list: Call<any[]>; create: Call<any>; get: Call<any>; delete: Call<boolean>; messages: Call<MessageEntry[]>
     status: Call<Record<string, any>>; promptAsync: Call<void>; command: Call<void>; abort: Call<void>
@@ -80,6 +90,22 @@ export function createKernelClient(connection: KernelConnection, directory: stri
       diagnostics: () => diagnostics.slice(),
       session: sdk.session as unknown as KernelClient['session'], config: sdk.config as unknown as KernelClient['config'],
       app: sdk.app as unknown as KernelClient['app'], command: sdk.command as unknown as KernelClient['command'],
+      file: {
+        list: async input => {
+          const response = await sdk.file.list({ query: { directory: input.directory, path: input.path } })
+          const nodes = Array.isArray(response.data) ? response.data : []
+          return result(nodes
+            .filter((node: any) => typeof node?.path === 'string' && (node.type === 'file' || node.type === 'directory'))
+            .map((node: any) => ({ path: node.path, type: node.type })))
+        },
+        find: async input => {
+          const response = await sdk.find.files({ query: { directory: input.directory, query: input.query, dirs: 'true' } })
+          const paths = Array.isArray(response.data) ? response.data : []
+          return result(paths
+            .filter((path: any) => typeof path === 'string' && path.length > 0)
+            .map((path: string) => ({ path, type: path.endsWith('/') ? 'directory' as const : 'file' as const })))
+        }
+      },
       permission: interactions.permission as unknown as KernelClient['permission'], question: interactions.question as unknown as KernelClient['question'], dispose,
       subscribe(handlers) {
         const url = new URL(`${connection.url}/event`)
@@ -236,6 +262,14 @@ export function createKernelClient(connection: KernelConnection, directory: stri
       const extra = available.data.filter(s => !names.has(s.name)).map(s => { skills.set(s.name, s.id); return { name: s.name, description: s.description } })
       return result([...commands.data, ...extra])
     } },
+    file: {
+      list: async input => result(((await sdk.file.list({ location, path: input.path })).data ?? [])
+        .filter((entry: any) => typeof entry?.path === 'string' && (entry.type === 'file' || entry.type === 'directory'))
+        .map((entry: any) => ({ path: entry.path, type: entry.type }))),
+      find: async input => result(((await sdk.file.find({ location, query: input.query, ...(input.limit ? { limit: input.limit } : {}) })).data ?? [])
+        .filter((entry: any) => typeof entry?.path === 'string' && (entry.type === 'file' || entry.type === 'directory'))
+        .map((entry: any) => ({ path: entry.path, type: entry.type })))
+    },
     permission: {
       list: async () => {
         const response = await sdk.permission.request.list({ location })

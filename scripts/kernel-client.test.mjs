@@ -157,6 +157,61 @@ test('1.x 命令列表使用较长读取时限，普通读取仍按短时限中�
   } finally { client.dispose(); globalThis.fetch = original }
 })
 
+test('文件列举与模糊搜索归一化为相对路径与类型（1.x 与 2.x）', async () => {
+  const original = globalThis.fetch
+  const directory = 'E:\\中文目录'
+  const json = body => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
+  // 1.x：/file 返回 FileNode，/find/file 返回字符串路径（目录带尾斜杠）。
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init)
+    const { pathname, searchParams } = new URL(request.url)
+    if (pathname === '/file') {
+      assert.equal(searchParams.get('path'), '.')
+      return json([{ name: 'src', path: 'src', absolute: 'x', type: 'directory', ignored: false }, { name: 'x', path: 'README.md', absolute: 'x', type: 'file', ignored: false }, { path: 'bad', type: 'other' }])
+    }
+    if (pathname === '/find/file') {
+      assert.equal(searchParams.get('query'), 'md')
+      assert.equal(searchParams.get('dirs'), 'true')
+      return json(['README.md', 'docs/', 42])
+    }
+    return json([])
+  }
+  const v1 = createKernelClient({ protocol: 'v1', url: 'http://127.0.0.1:1234' }, directory)
+  try {
+    assert.deepEqual((await v1.file.list({ directory, path: '.' })).data, [
+      { path: 'src', type: 'directory' }, { path: 'README.md', type: 'file' }
+    ])
+    assert.deepEqual((await v1.file.find({ directory, query: 'md' })).data, [
+      { path: 'README.md', type: 'file' }, { path: 'docs/', type: 'directory' }
+    ])
+  } finally { v1.dispose() }
+  // 2.x：/api/fs/list 与 /api/fs/find 返回 { data: FileSystemEntry[] }。
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init)
+    const { pathname, searchParams } = new URL(request.url)
+    if (pathname === '/api/fs/list') {
+      assert.equal(decodeURIComponent(searchParams.get('location[directory]')), directory)
+      assert.equal(searchParams.get('path'), '.')
+      return json({ location: {}, data: [{ path: 'src', type: 'directory' }, { path: 'README.md', type: 'file' }] })
+    }
+    if (pathname === '/api/fs/find') {
+      assert.equal(searchParams.get('query'), 'md')
+      assert.equal(searchParams.get('limit'), '10')
+      return json({ location: {}, data: [{ path: 'docs/guide.md', type: 'file' }] })
+    }
+    return json({ location: {}, data: [] })
+  }
+  const v2 = createKernelClient({ protocol: 'v2', url: 'http://127.0.0.1:1234', headers: {} }, directory)
+  try {
+    assert.deepEqual((await v2.file.list({ directory, path: '.' })).data, [
+      { path: 'src', type: 'directory' }, { path: 'README.md', type: 'file' }
+    ])
+    assert.deepEqual((await v2.file.find({ directory, query: 'md', limit: 10 })).data, [
+      { path: 'docs/guide.md', type: 'file' }
+    ])
+  } finally { v2.dispose(); globalThis.fetch = original }
+})
+
 test('2.x 重连历史恢复工具状态，迟到历史不覆盖新一轮父消息', () => {
   const projection = new V2Projection('E:\\目录')
   projection.history('session', [{ type: 'user', id: 'old-user', time: { created: 1 } }, { type: 'assistant', id: 'assistant', content: [{ type: 'tool', id: 'call', name: 'shell', state: { status: 'running', input: { command: 'echo test' } } }] }])
