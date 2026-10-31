@@ -25,7 +25,7 @@ mkdirSync(appDir, { recursive: true })
 cpSync(join(repoRoot, 'out'), join(appDir, 'out'), { recursive: true })
 writeFileSync(
   join(appDir, 'package.json'),
-  JSON.stringify({ name: 'huarnessy', version: '0.1.0', main: 'out/main/index.js' }, null, 2)
+  JSON.stringify({ name: 'huarnessy', version: '0.1.1', main: 'out/main/index.js' }, null, 2)
 )
 
 const electronPath = require('electron')

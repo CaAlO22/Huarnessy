@@ -2,6 +2,7 @@ const { app, BrowserWindow } = require('electron')
 const assert = require('node:assert/strict')
 const { join } = require('node:path')
 const workspaceRegressions = require('./workspace-regressions.cjs')
+const busySessionRegressions = require('./busy-session-regressions.cjs')
 const replyUIRegressions = require('./reply-ui-regressions.cjs')
 const replyDetailsRegressions = require('./reply-details-regressions.cjs')
 const stepRangeRegressions = require('./step-range-regressions.cjs')
@@ -457,6 +458,7 @@ app.whenReady().then(async () => {
     }
     if (!process.env.BENCH_LAYOUT_ONLY) {
       console.log(JSON.stringify({ regressions: await window.webContents.executeJavaScript(`(${regressions.toString()})()`) }))
+      console.log(JSON.stringify({ busySessions: await window.webContents.executeJavaScript(`(${busySessionRegressions.toString()})()`) }))
       console.log(JSON.stringify({ composer: await window.webContents.executeJavaScript(`(${composerRegressions.toString()})()`) }))
       console.log(JSON.stringify({ permissions: await window.webContents.executeJavaScript(`(${permissionRegressions.toString()})()`) }))
       console.log(JSON.stringify({ collapseScroll: await window.webContents.executeJavaScript(`(${collapseScrollRegressions.toString()})()`) }))

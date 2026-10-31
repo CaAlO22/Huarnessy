@@ -247,11 +247,11 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 
 ### 双版本通信与连接界面
 
-- `kernel-client.ts` 是渲染层唯一协议入口：1.x 封装 `@opencode-ai/sdk`，2.x 固定 `@opencode/client@2.0.32` Promise 客户端；界面及 PermissionGate 不再创建独立 SDK。每个客户端绑定目录与 AbortController，工作空间切换关闭事件流并取消旧请求。
+- `kernel-client.ts` 是渲染层唯一协议入口：1.x 封装 `@opencode-ai/sdk`，2.x 固定 `@opencode/client@2.0.32` Promise 客户端；界面及 PermissionGate 不再创建独立 SDK。每个客户端绑定目录与 AbortController，工作空间切换关闭事件流并取消旧请求。普通 GET 读取限时 15 秒；`/command`、`/api/command`、`/api/skill` 会等待 MCP prompts，单独使用 120 秒时限，避免 MCP 冷启动（如 npx/远程 server）被误判为连接故障。
 - `kernel-projection.ts` 将 2.x 原生 session.text/reasoning/tool/step/execution/compaction 事件投影到原有有序归并队列。正文及思考 ID 是 message ID + content ordinal，工具 ID 是 message ID + tool ID；结束事件是完整快照替换，不能再次追加。2.x 全局事件先按 location/已验证会话归属过滤，所有 HTTP 请求额外携带编码的 x-opencode-directory。列表及消息历史遍历分页。
 - 2.x 会话模型、Agent 由 switchModel/switchAgent 切换；文件使用原生 URI 附件，压缩/停止/撤回/恢复分别映射原生接口。权限字段 action/resources/save 映射旧 UI；Form 通过 KernelFormDialog 展示文本、数字、整数、布尔、单选、多选、条件字段及外部步骤。
 - 2.x 事件通过 SDK 的 fetch 流携带鉴权，以 1/2/4/8/10 秒间隔重连；重连补查历史、模型、会话、运行状态、授权及待答表单，写操作不重放。1.x 保留原生 EventSource 自动重连。Markdown Worker、缓存和有界格式化队列保持原机制。
-- 标题栏文字状态可打开 ConnectionStatus 诊断面板；空白聊天页展示启动进度、失败原因和重试/选内核/恢复自动选择。会话/模型/命令加载失败在界面显示，空模型列表提示检查配置；诊断复制只序列化 ServerInfo，不包含连接凭据。
+- 标题栏文字状态可打开 ConnectionStatus 诊断面板；空白聊天页展示启动进度、失败原因和重试/选内核/恢复自动选择。会话/模型/命令加载失败在界面显示，空模型列表提示检查配置；诊断复制只序列化 ServerInfo，不包含连接凭据。命令列表不阻塞首次初始化：失败时保留内置命令，并按 3/10/30 秒自动重试，首次 SSE 握手成功后也会补拉；成功即清除提示。
 - `npm run test:kernel` 同时运行启动与协议测试；协议测试使用 SDK 真实序列化和独立 HTTP 假响应，不代表真实模型输出速度。
 - `npm run test:kernel-ui`（可加 `--production`）使用独立 2.x HTTP/SSE 假内核，覆盖状态快照竞态、进度/失败/诊断复制、选择与重试防重、分页、原生流式去重、目录过滤、权限、条件数字表单及断线恢复。生产测试前先 build；测试截图仅写入 out/。
 - `npm run test:kernel-ui -- --production --real` 使用真实内核和隔离的临时配置/数据目录，不发送模型请求。可设置 `HUI_KERNEL_V1_BIN`、`HUI_KERNEL_V2_BIN` 指定两版二进制；默认检查 Clonely 的 1.x 和临时目录 huarnessy-real-kernel-2.0.32/opencode.exe。真实测试验证浏览器健康接口、SDK 会话/配置、带目录的 SSE，以及 file:// 生产 Origin 的鉴权和跨域。版本探测须接受 1.x 的纯版本字符串和 2.x 的 `opencode v2.0.32` 前缀。

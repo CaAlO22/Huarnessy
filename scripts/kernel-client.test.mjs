@@ -133,6 +133,30 @@ test('1.x 适配保留旧路径及目录参数，HTTP 错误不会被吞掉', as
   } finally { client.dispose(); globalThis.fetch = original }
 })
 
+test('1.x 命令列表使用较长读取时限，普通读取仍按短时限中止', async () => {
+  const original = globalThis.fetch
+  const directory = 'E:\\中文目录'
+  const delayed = (body, delay, signal) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(new Response(body, { headers: { 'Content-Type': 'application/json' } })), delay)
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }, { once: true })
+  })
+  globalThis.fetch = async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init)
+    const signal = init?.signal ?? request.signal
+    if (new URL(request.url).pathname === '/command') return delayed(JSON.stringify([{ name: 'review' }]), 30, signal)
+    return delayed('[]', 300, signal)
+  }
+  // 1.x /command 会等待 MCP prompts；用短时限验证策略选择，不依赖真实 MCP。
+  const client = createKernelClient({ protocol: 'v1', url: 'http://127.0.0.1:1234' }, directory, { readTimeoutMs: 60, listingTimeoutMs: 1000 })
+  try {
+    assert.deepEqual((await client.command.list({ query: { directory } })).data.map(c => c.name), ['review'])
+    await assert.rejects(client.session.list({ query: { directory } }), /timeout|timed out/i)
+  } finally { client.dispose(); globalThis.fetch = original }
+})
+
 test('2.x 重连历史恢复工具状态，迟到历史不覆盖新一轮父消息', () => {
   const projection = new V2Projection('E:\\目录')
   projection.history('session', [{ type: 'user', id: 'old-user', time: { created: 1 } }, { type: 'assistant', id: 'assistant', content: [{ type: 'tool', id: 'call', name: 'shell', state: { status: 'running', input: { command: 'echo test' } } }] }])

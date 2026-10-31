@@ -37,7 +37,16 @@ export interface KernelClient {
 
 const result = <T>(data: T): KernelResult<T> => ({ data })
 
-export function createKernelClient(connection: KernelConnection, directory: string): KernelClient {
+export interface KernelClientOptions {
+  // Ordinary reads are cheap; list endpoints such as /command may wait for MCP
+  // servers to finish booting, so they get their own, much longer deadline.
+  readTimeoutMs?: number
+  listingTimeoutMs?: number
+}
+
+export function createKernelClient(connection: KernelConnection, directory: string, options: KernelClientOptions = {}): KernelClient {
+  const readTimeoutMs = options.readTimeoutMs ?? 15000
+  const listingTimeoutMs = options.listingTimeoutMs ?? 120000
   const lifetime = new AbortController()
   const subscriptions = new Set<KernelSubscription>()
   const diagnostics: KernelRequestDiagnostic[] = []
@@ -48,8 +57,12 @@ export function createKernelClient(connection: KernelConnection, directory: stri
     const accept = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get('accept')
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
     const signals = [lifetime.signal, ...(signal ? [signal] : [])]
-    if (method === 'GET' && accept !== 'text/event-stream') signals.push(AbortSignal.timeout(15000))
     const endpoint = new URL(input instanceof Request ? input.url : String(input)).pathname
+    if (method === 'GET' && accept !== 'text/event-stream') {
+      // Listing commands/skills aggregates MCP prompts, which can block until
+      // every MCP server has settled. Treat that as a slow read, not a failure.
+      signals.push(AbortSignal.timeout(/\/(command|skill)$/.test(endpoint) ? listingTimeoutMs : readTimeoutMs))
+    }
     try {
       const response = await fetch(input, { ...init, signal: AbortSignal.any(signals) })
       record({ method, endpoint, status: response.status, at: Date.now() })

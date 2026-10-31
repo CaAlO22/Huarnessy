@@ -1094,6 +1094,11 @@ export default function App(): React.ReactElement {
   const workspaceRef = useRef<string | null>(null)
   const choosingWorkspaceRef = useRef(false)
   const clientBase = useRef<string | null>(null)
+  const commandRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const commandRetryAttempt = useRef(0)
+  const commandsLoading = useRef(false)
+  const commandsFailed = useRef(false)
+  const commandEpoch = useRef(0)
   const esRef = useRef<KernelSubscription | null>(null)
   const activeIdRef = useRef<string | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1326,21 +1331,49 @@ export default function App(): React.ReactElement {
           ? savedAgent
           : (primary.find((a: any) => a.name === 'build')?.name ?? primary[0]?.name ?? null)
       setSelectedAgent(defAgent)
-
-      try {
-        const cmdRes = await c.command.list({ query: { directory: workspaceRef.current ?? undefined } })
-        if (c !== clientRef.current) return
-        const builtinNames = new Set(builtinCommands.map(command => command.name))
-        const loaded: CommandOption[] = (unwrap(cmdRes) ?? [])
-          .filter((cmd: any) => typeof cmd?.name === 'string' && cmd.name.length > 0)
-          .map((cmd: any) => ({ name: cmd.name, description: cmd.description }))
-        setCommands([...builtinCommands, ...loaded.filter(command => !builtinNames.has(command.name))])
-        setConnectionIssues(old => { const next = { ...old }; delete next.commands; return next })
-      } catch (e) {
-        if (c === clientRef.current) setConnectionIssues(old => ({ ...old, commands: `加载命令失败：${e instanceof Error ? e.message : String(e)}` }))
-      }
     } catch (e) {
       if (c === clientRef.current) setConnectionIssues(old => ({ ...old, config: `加载模型或配置失败：${e instanceof Error ? e.message : String(e)}` }))
+    }
+  }, [])
+
+  // Commands are not required to start chatting. In 1.x the kernel resolves
+  // /command by waiting for MCP prompts, which can take far longer than an
+  // ordinary read while npx/remote MCP servers boot. Load them off the
+  // initialization path and retry quietly so a slow MCP does not look like a
+  // broken connection.
+  const loadCommands = useCallback(async () => {
+    const c = clientRef.current
+    const directory = workspaceRef.current
+    if (!c || !directory || commandsLoading.current) return
+    const epoch = commandEpoch.current
+    commandsLoading.current = true
+    if (commandRetryTimer.current) { clearTimeout(commandRetryTimer.current); commandRetryTimer.current = null }
+    try {
+      const cmdRes = await c.command.list({ query: { directory } })
+      if (epoch !== commandEpoch.current || c !== clientRef.current || directory !== workspaceRef.current) return
+      const builtinNames = new Set(builtinCommands.map(command => command.name))
+      const loaded: CommandOption[] = (unwrap(cmdRes) ?? [])
+        .filter((cmd: any) => typeof cmd?.name === 'string' && cmd.name.length > 0)
+        .map((cmd: any) => ({ name: cmd.name, description: cmd.description }))
+      setCommands([...builtinCommands, ...loaded.filter(command => !builtinNames.has(command.name))])
+      commandsFailed.current = false
+      commandRetryAttempt.current = 0
+      setConnectionIssues(old => { const next = { ...old }; delete next.commands; return next })
+    } catch (e) {
+      if (epoch !== commandEpoch.current || c !== clientRef.current || directory !== workspaceRef.current) return
+      commandsFailed.current = true
+      setCommands(previous => previous.length ? previous : builtinCommands)
+      setConnectionIssues(old => ({ ...old, commands: `命令列表暂不可用（内核 MCP 可能仍在初始化）：${e instanceof Error ? e.message : String(e)}` }))
+      const attempt = commandRetryAttempt.current
+      if (attempt < 3) {
+        commandRetryAttempt.current = attempt + 1
+        commandRetryTimer.current = setTimeout(() => {
+          commandRetryTimer.current = null
+          void loadCommands()
+        }, [3000, 10000, 30000][attempt])
+      }
+    } finally {
+      if (epoch === commandEpoch.current) commandsLoading.current = false
     }
   }, [])
 
@@ -1499,6 +1532,11 @@ export default function App(): React.ReactElement {
     questionClientRef.current = null
     questionVersion.current++
     clientBase.current = null
+    if (commandRetryTimer.current) { clearTimeout(commandRetryTimer.current); commandRetryTimer.current = null }
+    commandEpoch.current++
+    commandRetryAttempt.current = 0
+    commandsLoading.current = false
+    commandsFailed.current = false
     esRef.current?.close()
     esRef.current = null
     clearEvents()
@@ -1608,6 +1646,9 @@ export default function App(): React.ReactElement {
     let loaded = false
     const finishInitialization = () => { if (loaded && opened && clientRef.current === client) setInitializing(false) }
     void Promise.allSettled([loadSessions(), loadConfig()]).then(() => { loaded = true; finishInitialization() })
+    // Command loading is deliberately not awaited: slow MCP startup must not
+    // hold the workspace in "正在加载工作空间" or block sending.
+    void loadCommands()
     const onOpen = () => {
       if (clientRef.current !== client) return
       setEventLost(false)
@@ -1618,12 +1659,16 @@ export default function App(): React.ReactElement {
       void reloadPermissions()
       void syncSessionStatus(client, workspace)
       // EventSource does not replay events missed while it was disconnected,
-      // so reconcile history and status after a real reconnect.
+      // so reconcile history and status after a real reconnect. The first
+      // handshake only retries commands that failed during kernel warm-up.
       if (reconnected) {
         loadSessions()
         loadConfig()
+        loadCommands()
         refreshMessages()
         if (activeIdRef.current) void loadQuestions(activeIdRef.current)
+      } else if (commandsFailed.current) {
+        void loadCommands()
       }
     }
     const onError = (error?: unknown) => {
@@ -1643,7 +1688,7 @@ export default function App(): React.ReactElement {
 
       switch (t) {
         case 'connection.reconcile':
-          loadSessions(); loadConfig(); refreshMessages(); void reloadPermissions(); break
+          loadSessions(); loadConfig(); loadCommands(); refreshMessages(); void reloadPermissions(); break
         case 'question.asked':
           if (active && p.sessionID === active && p.id) {
             questionVersion.current++
@@ -1740,6 +1785,7 @@ export default function App(): React.ReactElement {
     workspace,
     loadSessions,
     loadConfig,
+    loadCommands,
     refreshMessages,
     enqueueEvent,
     clearEvents,
@@ -2432,7 +2478,7 @@ export default function App(): React.ReactElement {
 
           <div ref={composerDockRef} className="hui-composer-dock">
             <div className="mx-auto w-full max-w-[684px]">
-              {Object.values(connectionIssues).map(issue => <div key={issue} role="alert" className="mb-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{issue}<button type="button" className="ml-2 underline" onClick={() => { void loadSessions(); void loadConfig() }}>重新加载</button></div>)}
+              {Object.values(connectionIssues).map(issue => <div key={issue} role="alert" className="mb-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{issue}<button type="button" className="ml-2 underline" onClick={() => { void loadSessions(); void loadConfig(); void loadCommands() }}>重新加载</button></div>)}
             {reverted?.sessionId === activeId && reverted.restoreAvailable ? (
               <div className="hui-revert-notice mb-2 flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-[12px]" role="status">
                 <span>已撤回 {reverted.rounds} 轮对话及相关工作区改动</span>
