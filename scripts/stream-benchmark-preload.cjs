@@ -128,7 +128,7 @@ window.fetch = async (url, options) => {
   ]
   else if (path === '/find/file') {
     const query = (requestUrl.searchParams.get('query') ?? '').toLowerCase()
-    data = ['README.md', 'docs/guide.md', 'src/App.tsx', 'src/main.ts'].filter(item => item.toLowerCase().includes(query))
+    data = ['README.md', 'docs/guide.md', 'src/App.tsx', 'src/main.ts', 'markdown-notes.md', 'src/matrix-download.ts'].filter(item => item.toLowerCase().includes(query))
   }
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
 }

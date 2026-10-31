@@ -97,27 +97,51 @@ const builtinCommands: CommandOption[] = [
 const atTokenPattern = /(?:^|\s)@([^\s@]*)$/
 interface AtToken { start: number; end: number; query: string }
 
-// Subsequence match used to color the characters the user actually typed
-// inside a server-returned path (e.g. `md` inside `docs/guide.md`).
-function fuzzyHighlightSegments(text: string, query: string): Array<{ text: string; hit: boolean }> {
-  if (!query) return [{ text, hit: false }]
-  const lower = text.toLowerCase()
+// The kernel fuzzy-matches on its own and happily returns paths whose typed
+// letters scatter across the whole path (`md` → `src/matrix-download.ts`).
+// The panel keeps only tight matches: the query must fit inside a window at
+// most twice its length. Matches anchored at a path/segment boundary rank
+// higher. Segments merge adjacent runs so the path never renders as loose
+// single characters.
+interface AtMatch { segments: Array<{ text: string; hit: boolean }>; score: number }
+
+function matchFileQuery(path: string, query: string): AtMatch | null {
+  if (!query) return { segments: [{ text: path, hit: false }], score: 0 }
+  const lower = path.toLowerCase()
   const needle = query.toLowerCase()
+  let bestStart = -1
+  let bestEnd = -1
+  for (let i = 0; i < lower.length; i++) {
+    if (lower[i] !== needle[0]) continue
+    let qi = 1
+    let j = i + 1
+    while (qi < needle.length && j < lower.length) {
+      if (lower[j] === needle[qi]) qi++
+      j++
+    }
+    if (qi === needle.length && (bestStart === -1 || j - 1 - i < bestEnd - bestStart)) { bestStart = i; bestEnd = j - 1 }
+  }
+  if (bestStart === -1 || bestEnd - bestStart + 1 > needle.length * 2) return null
+  const span = bestEnd - bestStart + 1
+  const boundary = bestStart === 0 || path[bestStart - 1] === '/' || path[bestStart - 1] === '.'
   const segments: Array<{ text: string; hit: boolean }> = []
+  const push = (text: string, hit: boolean): void => {
+    if (!text) return
+    const previous = segments[segments.length - 1]
+    if (previous && previous.hit === hit) previous.text += text
+    else segments.push({ text, hit })
+  }
   let qi = 0
   let last = 0
-  for (let i = 0; i < text.length && qi < needle.length; i++) {
-    if (lower[i] !== needle[qi]) continue
-    if (i > last) segments.push({ text: text.slice(last, i), hit: false })
-    segments.push({ text: text[i], hit: true })
+  for (let i = bestStart; i <= bestEnd; i++) {
+    if (qi >= needle.length || lower[i] !== needle[qi]) continue
+    push(path.slice(last, i), false)
+    push(path[i], true)
     last = i + 1
     qi++
   }
-  // The server fuzzy-matches on its own; when the query is not even a
-  // subsequence (different transliteration), show the path without highlights.
-  if (qi < needle.length) return [{ text, hit: false }]
-  if (last < text.length) segments.push({ text: text.slice(last), hit: false })
-  return segments
+  push(path.slice(last), false)
+  return { segments, score: needle.length / span + (boundary ? 0.5 : 0) }
 }
 
 // Kernel paths may use either separator; the panel shows workspace-relative
@@ -1281,7 +1305,14 @@ export default function App(): React.ReactElement {
       }
       const response = await c.file.find({ directory, query: atQuery, limit: 30 })
       if (epoch !== atRequestEpoch.current) return
-      setAtResults(normalizeFileEntries(response.data ?? []).slice(0, 10))
+      // Drop the kernel's loose far-apart subsequence hits and rank the tight
+      // ones (boundary-anchored first). Array#sort is stable, so equal scores
+      // keep the kernel's ordering.
+      const scored = normalizeFileEntries(response.data ?? [])
+        .map(entry => ({ entry, match: matchFileQuery(entry.path, atQuery) }))
+        .filter((item): item is { entry: KernelFileEntry; match: AtMatch } => item.match !== null)
+        .sort((a, b) => b.match.score - a.match.score)
+      setAtResults(scored.slice(0, 10).map(item => item.entry))
     }
     setAtLoading(true)
     atDebounceTimer.current = setTimeout(() => {
@@ -2795,10 +2826,12 @@ export default function App(): React.ReactElement {
                     >
                       <span className="hui-slash-name hui-at-name">
                         <span className="hui-at-icon" aria-hidden="true">{entry.type === 'directory' ? '▸' : '▤'}</span>
-                        {fuzzyHighlightSegments(entry.path, atQuery ?? '').map((segment, position) => segment.hit
-                          ? <span key={position} className="hui-at-hit">{segment.text}</span>
-                          : <span key={position}>{segment.text}</span>)}
-                        {entry.type === 'directory' ? '/' : null}
+                        <span className="hui-at-path">
+                          {(matchFileQuery(entry.path, atQuery ?? '')?.segments ?? [{ text: entry.path, hit: false }]).map((segment, position) => segment.hit
+                            ? <strong key={position} className="hui-at-hit">{segment.text}</strong>
+                            : <span key={position}>{segment.text}</span>)}
+                          {entry.type === 'directory' ? '/' : null}
+                        </span>
                       </span>
                     </button>
                   ))}

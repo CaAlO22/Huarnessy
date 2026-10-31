@@ -125,10 +125,11 @@ module.exports = async () => {
   check(window.benchRequests.some(request => request.path === '/file' && request.directory === window.benchWorkspace), 'the @ root listing carries the active workspace directory')
 
   setText('@md')
-  await waitFor(() => atOptions().length === 2)
+  await waitFor(() => atOptions().length === 3)
   check(window.benchRequests.some(request => request.path === '/find/file' && request.query?.query === 'md' && request.query?.dirs === 'true'), 'typing after @ asks the kernel for a fuzzy file match')
+  check(!document.querySelector('.hui-at-menu').textContent.includes('matrix'), 'far-apart subsequence hits are dropped from the @ results')
   const atHits = atOptions()[0].querySelectorAll('.hui-at-hit')
-  check(atHits.length >= 1 && Array.from(atHits).map(hit => hit.textContent).join('').toLowerCase() === 'md', 'the characters matched by the fuzzy query are highlighted')
+  check(atHits.length === 1 && atHits[0].textContent.toLowerCase() === 'md', 'the matched run stays merged and is highlighted as one piece')
 
   check(atOptions()[0].getAttribute('data-focused') === 'true', 'the first @ option starts focused')
   textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
@@ -146,7 +147,7 @@ module.exports = async () => {
   check(textarea.value === '@re', 'Escape closes the @ panel but keeps the typed text')
 
   setText('看下 @src/')
-  await waitFor(() => atOptions().length === 2)
+  await waitFor(() => atOptions().length === 3)
   textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
   await waitFor(() => textarea.value === '看下 @src/App.tsx ')
   check(!document.querySelector('.hui-at-menu'), 'an @ token mid-text completes in place without touching the rest of the message')
