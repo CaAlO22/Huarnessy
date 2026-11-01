@@ -284,7 +284,7 @@ body {
   height: 15px;
   /* Keep the circle clear of the window buttons; the hover percentage
      fades into this reserved gap instead of overlapping them. */
-  margin-right: 26px;
+  margin-right: 56px;
   color: rgba(233, 242, 251, .92);
   cursor: default;
 }
@@ -297,8 +297,8 @@ body {
   transition: transform 260ms cubic-bezier(.22, .8, .28, 1);
 }
 .hui-context-meter:hover .hui-context-ring { transform: translateX(-4px) rotate(-90deg); }
-.hui-context-ring-track { fill: none; stroke: rgba(255, 255, 255, .16); stroke-width: 5; }
-.hui-context-ring-fill { fill: none; stroke: #7fe0ec; stroke-width: 5; stroke-linecap: round; transition: stroke-dashoffset 320ms ease, stroke 200ms ease; }
+.hui-context-ring-track { fill: none; stroke: rgba(255, 255, 255, .16); stroke-width: 6; }
+.hui-context-ring-fill { fill: none; stroke: #ffffff; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset 320ms ease, stroke 200ms ease; }
 .hui-context-meter[data-level='medium'] .hui-context-ring-fill { stroke: #e7a94f; }
 .hui-context-meter[data-level='high'] .hui-context-ring-fill { stroke: #ef6b6b; }
 .hui-context-percent {
@@ -308,7 +308,7 @@ body {
   transform: translateX(8px);
   pointer-events: none;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: -.02em;

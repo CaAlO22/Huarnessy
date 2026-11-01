@@ -229,7 +229,7 @@ const isImageRead = (tool: string, state: any): boolean => {
 const toolDisplayName = (tool: string, state: any): string => isImageRead(tool, state) ? 'PicRead' : displayToolName(tool)
 
 // Header context ring geometry: keep the progress arc in sync with the radius.
-const contextRingRadius = 15.5
+const contextRingRadius = 15
 const contextRingCircumference = 2 * Math.PI * contextRingRadius
 
 const defaultPanelTransparency = 55
