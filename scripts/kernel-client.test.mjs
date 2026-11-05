@@ -238,3 +238,30 @@ test('2.x 重连历史恢复工具状态，迟到历史不覆盖新一轮父消�
   const meta = projection.events(event('session.step.started', { assistantMessageID: 'new-assistant', model: { id: 'model', providerID: 'provider' } }))[0]
   assert.equal(meta.properties.info.parentID, 'new-user')
 })
+
+test('2.x 事件订阅不带 Accept 头，也不会被普通读取时限中止', async () => {
+  const original = globalThis.fetch
+  const directory = 'E:\\工作空间 A'
+  let streamSignal
+  let streamHeaders
+  const errors = []
+  globalThis.fetch = async (input, init) => {
+    const u = new URL(input instanceof Request ? input.url : String(input))
+    if (u.pathname === '/api/event') {
+      streamSignal = init?.signal
+      streamHeaders = new Headers(init?.headers)
+      return new Response(new ReadableStream({ start() {} }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    return new Response('{}', { headers: { 'Content-Type': 'application/json' } })
+  }
+  // A short deadline makes a leaked read timeout observable within the test.
+  const client = createKernelClient({ protocol: 'v2', url: 'http://127.0.0.1:1234', headers: {} }, directory, { readTimeoutMs: 40 })
+  client.subscribe({ open() {}, error(error) { errors.push(error) }, event() {} })
+  try {
+    await new Promise(resolve => setTimeout(resolve, 120))
+    assert.ok(streamSignal, 'event stream was requested')
+    assert.equal(streamHeaders.get('accept'), null, '2.x event subscription sends no Accept header')
+    assert.equal(streamSignal.aborted, false, 'event stream must not inherit the read deadline')
+    assert.equal(errors.length, 0, 'a live event stream must not report a connection failure')
+  } finally { client.dispose(); globalThis.fetch = original }
+})

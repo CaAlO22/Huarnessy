@@ -68,7 +68,11 @@ export function createKernelClient(connection: KernelConnection, directory: stri
     const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
     const signals = [lifetime.signal, ...(signal ? [signal] : [])]
     const endpoint = new URL(input instanceof Request ? input.url : String(input)).pathname
-    if (method === 'GET' && accept !== 'text/event-stream') {
+    // The 2.x SDK subscribes to GET /api/event without an Accept header, so
+    // recognise long-lived event streams by path as well. A read deadline on
+    // that stream aborts it every 15s as "Transport: BodyStreamBuffer was aborted".
+    const eventStream = accept === 'text/event-stream' || /(?:^|\/)event(?:\/|$)/.test(endpoint)
+    if (method === 'GET' && !eventStream) {
       // Listing commands/skills aggregates MCP prompts, which can block until
       // every MCP server has settled. Treat that as a slow read, not a failure.
       signals.push(AbortSignal.timeout(/\/(command|skill)$/.test(endpoint) ? listingTimeoutMs : readTimeoutMs))
@@ -345,7 +349,14 @@ export function createKernelClient(connection: KernelConnection, directory: stri
               }
             }
             if (!signal.aborted) throw new Error('内核事件连接已关闭')
-          } catch (error) { if (signal.aborted) break; handlers.error(handshake.signal.aborted ? handshake.signal.reason : error) }
+          } catch (error) {
+            if (signal.aborted) break
+            // A dropped stream is normal churn that the retry loop repairs.
+            // Only handshake timeouts and repeated failures are surfaced as a
+            // connection error; one transient abort must not alarm the composer.
+            if (handshake.signal.aborted || retry >= 3) handlers.error(handshake.signal.aborted ? handshake.signal.reason : error)
+            else handlers.error()
+          }
           finally { clearTimeout(handshakeTimer) }
           const ms = [1000, 2000, 4000, 8000, 10000][Math.min(retry++, 4)]
           await new Promise<void>(resolve => {
