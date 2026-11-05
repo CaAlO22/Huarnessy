@@ -49,6 +49,10 @@ test('2.x SDK 请求合约：分页、目录、鉴权、模型选择、附件、
     const body = init?.body ? JSON.parse(init.body) : undefined
     const path = u.pathname
     requests.push({ url: u, method: init?.method, headers: new Headers(init?.headers), body })
+    // The 2.x kernel rejects a cursor combined with order: the cursor already
+    // carries the requested order. Mirroring that here catches a regression in
+    // the adapter's pagination contract.
+    if (u.searchParams.has('cursor') && u.searchParams.has('order')) return new Response(JSON.stringify({ message: 'Cursor cannot be combined with order' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
     let output
     if (path === '/api/session' && init.method === 'GET') output = { data: u.searchParams.get('cursor') ? [] : [session], cursor: { next: u.searchParams.get('cursor') ? null : 'page2' } }
     else if (path === '/api/session' && init.method === 'POST') output = { data: session }
@@ -85,6 +89,16 @@ test('2.x SDK 请求合约：分页、目录、鉴权、模型选择、附件、
     const messages = (await client.session.messages({ path: { id: 'session' } })).data
     assert.equal(messages.length, 2)
     assert.equal(messages[1].info.parentID, 'user')
+    // Order belongs to the first page only; every cursor page must omit it or
+    // the real kernel answers 400 "Cursor cannot be combined with order".
+    const listPages = requests.filter(r => r.url.pathname === '/api/session' && r.method === 'GET')
+    const messagePages = requests.filter(r => r.url.pathname === '/api/session/session/message')
+    assert.equal(listPages.length, 2, 'session list is paged')
+    assert.equal(listPages[0].url.searchParams.get('order'), 'desc')
+    assert.ok(listPages[1].url.searchParams.has('cursor') && !listPages[1].url.searchParams.has('order'), 'session list cursor page omits order')
+    assert.equal(messagePages.length, 2, 'message history is paged')
+    assert.equal(messagePages[0].url.searchParams.get('order'), 'asc')
+    assert.ok(messagePages[1].url.searchParams.has('cursor') && !messagePages[1].url.searchParams.has('order'), 'message cursor page omits order')
     await client.session.promptAsync({ path: { id: 'session' }, body: { model: { providerID: 'provider', modelID: 'model' }, variant: 'high', parts: [{ type: 'text', text: '问题' }, { type: 'file', filename: 'a.png', url: 'data:image/png;base64,YQ==' }] } })
     const prompt = requests.find(r => r.url.pathname.endsWith('/prompt'))
     assert.equal(prompt.body.files[0].uri, 'data:image/png;base64,YQ==')

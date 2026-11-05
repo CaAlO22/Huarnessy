@@ -157,6 +157,9 @@ export function createKernelClient(connection: KernelConnection, directory: stri
     do {
       const response = await load(cursor)
       items.push(...response.data)
+      // The kernel returns a next cursor whenever a page has a last item, even
+      // when that page is the last one. Stop on the following empty page.
+      if (!response.data.length) break
       cursor = response.cursor.next ?? undefined
       if (cursor && seen.has(cursor)) throw new Error('内核返回了重复的分页游标')
       if (cursor) seen.add(cursor)
@@ -171,11 +174,19 @@ export function createKernelClient(connection: KernelConnection, directory: stri
       if (session.model) await sdk.session.switchModel({ sessionID, model: { ...session.model, variant: body.variant } })
     }
   }
+  // 2.x cursors already encode order. Sending both from the second page on is
+  // rejected with "Cursor cannot be combined with order", so order is only a
+  // first-page parameter.
+  const paged = <T,>(first: (cursor?: string) => Promise<{ data: T[]; cursor: { next?: string | null } }>, rest: (cursor: string) => Promise<{ data: T[]; cursor: { next?: string | null } }>) =>
+    pages<T>(cursor => cursor ? rest(cursor) : first())
   const client: KernelClient = {
     diagnostics: () => diagnostics.slice(),
     dispose,
     session: {
-      list: async () => result((await pages(cursor => sdk.session.list({ directory, order: 'desc', limit: 100, cursor }))).map(s => projection.session(s)).filter(s => sameWorkspace(s.directory, directory))),
+      list: async () => result((await paged(
+        () => sdk.session.list({ directory, order: 'desc', limit: 100 }),
+        cursor => sdk.session.list({ directory, limit: 100, cursor })
+      )).map(s => projection.session(s)).filter(s => sameWorkspace(s.directory, directory))),
       create: async input => result(projection.session(await sdk.session.create({ location, title: input?.body?.title }))),
       get: async input => result(projection.session(await sdk.session.get({ sessionID: await scope(input) }))),
       delete: async input => {
@@ -186,7 +197,10 @@ export function createKernelClient(connection: KernelConnection, directory: stri
       messages: async input => {
         const sessionID = await scope(input)
         const revision = projection.revision
-        const messages = await pages(cursor => sdk.message.list({ sessionID, order: 'asc', limit: 100, cursor }))
+        const messages = await paged(
+          () => sdk.message.list({ sessionID, order: 'asc', limit: 100 }),
+          cursor => sdk.message.list({ sessionID, limit: 100, cursor })
+        )
         // A late REST response must not replace metadata already received on the live stream.
         return result(projection.history(sessionID, messages, revision === projection.revision))
       },
