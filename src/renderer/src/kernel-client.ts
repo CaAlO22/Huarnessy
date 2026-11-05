@@ -95,7 +95,7 @@ export function createKernelClient(connection: KernelConnection, directory: stri
           const response = await sdk.file.list({ query: { directory: input.directory, path: input.path } })
           const nodes = Array.isArray(response.data) ? response.data : []
           return result(nodes
-            .filter((node: any) => typeof node?.path === 'string' && (node.type === 'file' || node.type === 'directory'))
+            .filter((node: any) => typeof node?.path === 'string' && (node.type === 'file' || node.type === 'directory') && node.ignored !== true)
             .map((node: any) => ({ path: node.path, type: node.type })))
         },
         find: async input => {
