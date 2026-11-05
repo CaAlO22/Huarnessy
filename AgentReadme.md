@@ -198,6 +198,15 @@ npm run test:stream -- --layout-only  # 只验证流式气泡尺寸、滚动与�
 
 注意：未闭合代码围栏的 HTML 会补一个末尾换行。续写同一行时移除这个合成换行，已有源码换行则保留；Worker 替换宿主 DOM 后，在绘制前重新挂载纯文本后缀。不要把后缀重新放到段落外，也不要用固定高度或滚动动画掩盖排版跳动。标题、表格、公式等结构在真正形成时仍可能合理改变高度，测试针对的是无结构变化的连续文字反复收缩。
 
+### 会话切换预渲染与 keep-alive（2026-11-05）
+
+- `openSession` 对当前会话的重复点击直接返回（面板为空且空闲时仍作为打开失败后的重试路径），不再清空重拉历史。
+- `sessionViews` 按会话缓存视图快照（LRU 上限 12）：消息、撤回边界、轮次 key、滚动位置与吸底状态。切换会话时先渲染缓存快照立即出内容，REST 历史在后台对账；内容相同则 memo 化的消息组件保持挂载不动。
+- `SessionConversation`（`App.tsx`）把聊天滚动区、吸底观察器、输入框预留（`--hui-composer-reserve`）与收起滚动补偿（`CollapseScrollContext`）下沉为每会话一个实例。最近打开的 `KEEP_ALIVE_SESSIONS`（3）个会话保持挂载、用 `display:none` 隐藏：Worker 渲染的 Markdown DOM、步骤展开状态与 LiquidGlass 置换图全部保留，切回时零重渲染，只恢复滚动位置。
+- 隐藏视图的观察器自行让位：吸底/滚动恢复的 ResizeObserver 在 `!active` 时跳过；`useLiquidGlassMap` 在零尺寸时跳过重建、显示后按真实尺寸重生成，无需额外开关。`display:none` 会重置 `scrollTop`，所以每会话滚动位置实时写入快照（`onScrollState`），重新显示时在布局效应中恢复；非吸底会话在 1.5 秒窗口内随 Worker 重排版的内容增长重新贴位。
+- 发送时 `followNonce` 递增，让活动视图重新吸底；没有活动会话时渲染 `key="empty-pane"` 的空状态视图。删除会话与工作空间切换会清理对应缓存与 keep-alive 列表。
+- 回归断言中"内容不得泄漏到当前会话"的查询必须限定 `.hui-chat-scroll[data-active="true"]`：keep-alive 下隐藏视图合法保留后台会话自己的 DOM（`stream-benchmark.cjs`、`reply-details-regressions.cjs` 已按此调整）。
+
 ### 回复等待与入场动效
 
 - `ReplyPresentation.tsx` 在发送后显示紧凑的“等待回复”玻璃气泡，圆点通过 CSS 缩放、圆环、旋转和颜色变化呈现等待状态；收到用户消息回显前也能立即显示。
