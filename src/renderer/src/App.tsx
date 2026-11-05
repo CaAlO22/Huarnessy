@@ -1184,6 +1184,53 @@ export default function App(): React.ReactElement {
   const deletingRef = useRef<{ client: any; id: string } | null>(null)
   const closeSessionMenu = useCallback(() => setSessionMenu(null), [])
 
+  // Per-session view snapshots (LRU, capped): messages, revert boundary, turn
+  // keys and scroll state. Switching back renders from the cache immediately
+  // instead of blanking the pane and waiting for REST history before any DOM
+  // appears; the REST snapshot then reconciles in the background.
+  type SessionViewSnapshot = {
+    messages: MessageEntry[]
+    reverted: RevertedTurn | null
+    turnKeys: Map<string, string>
+    scrollTop: number
+    stickBottom: boolean
+    followingReply: boolean
+  }
+  const sessionViews = useRef(new Map<string, SessionViewSnapshot>())
+  // Non-sticky sessions restore their reading position after switching back.
+  // Worker formatting grows the content asynchronously, so the restore is
+  // re-applied on content resizes for a short window instead of only once.
+  const restoreScroll = useRef<{ top: number; until: number } | null>(null)
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+  const busyRef = useRef(false)
+  busyRef.current = busy
+  const followingReplyRef = useRef(followingReply)
+  followingReplyRef.current = followingReply
+
+  const rememberSessionView = useCallback((id: string): SessionViewSnapshot => {
+    const views = sessionViews.current
+    let entry = views.get(id)
+    if (entry) {
+      // Touch for LRU order.
+      views.delete(id)
+      views.set(id, entry)
+    } else {
+      entry = { messages: [], reverted: null, turnKeys: new Map(), scrollTop: 0, stickBottom: true, followingReply: true }
+      views.set(id, entry)
+      while (views.size > 12) views.delete(views.keys().next().value!)
+    }
+    return entry
+  }, [])
+
+  useEffect(() => {
+    if (!activeId || deletedSessions.current.has(activeId)) return
+    const entry = rememberSessionView(activeId)
+    entry.messages = messages
+    entry.reverted = reverted?.sessionId === activeId ? reverted : null
+    entry.turnKeys = new Map(turnKeys.current)
+  }, [activeId, messages, reverted, rememberSessionView])
+
   useEffect(() => {
     try { localStorage.setItem('hui.panelTransparency', String(panelTransparency)) } catch { /* Preview still works. */ }
   }, [panelTransparency])
@@ -1584,8 +1631,28 @@ export default function App(): React.ReactElement {
     const c = clientRef.current
     if (!c || deletedSessions.current.has(id) || deletingRef.current?.id === id) return
     closeSessionMenu()
+    // Re-clicking the open session must not blank and re-render it. An empty,
+    // idle pane is the retry path after a failed open, so only then re-fetch.
+    if (id === activeIdRef.current && (messagesRef.current.length > 0 || busyRef.current)) return
+    const previousId = activeIdRef.current
+    if (previousId && previousId !== id) {
+      const leaving = sessionViews.current.get(previousId)
+      if (leaving) {
+        leaving.scrollTop = scrollRef.current?.scrollTop ?? leaving.scrollTop
+        leaving.stickBottom = stickBottom.current
+        leaving.followingReply = followingReplyRef.current
+      }
+    }
     clearEvents()
-    turnKeys.current.clear()
+    // Show the cached snapshot immediately when we have one; the REST fetch
+    // below still reconciles, and identical content keeps memoized message
+    // components (and their Worker-rendered Markdown DOM) mounted untouched.
+    const cached = sessionViews.current.get(id)
+    if (cached) {
+      sessionViews.current.delete(id)
+      sessionViews.current.set(id, cached)
+    }
+    turnKeys.current = cached ? new Map(cached.turnKeys) : new Map()
     pendingTurnKey.current = null
     revertOperation.current = null
     setRevertingId(null)
@@ -1594,11 +1661,18 @@ export default function App(): React.ReactElement {
     const version = revision.current
     setActiveId(id)
     activeIdRef.current = id
-    setMessages([])
+    setMessages(cached ? cached.messages : [])
     setQuestions([])
     setAnsweringQuestion(false)
     void loadQuestions(id)
-    setReverted(null)
+    setReverted(cached?.reverted && cached.reverted.sessionId === id ? cached.reverted : null)
+    stickBottom.current = cached ? cached.stickBottom : true
+    rangeReading.current = false
+    setFollowingReply(cached ? cached.followingReply : true)
+    followingReplyRef.current = cached ? cached.followingReply : true
+    restoreScroll.current = cached && !cached.stickBottom
+      ? { top: cached.scrollTop, until: performance.now() + 1500 }
+      : null
     try {
       const [r, sessionResult] = await Promise.all([
         c.session.messages({ path: { id } }),
@@ -1622,6 +1696,7 @@ export default function App(): React.ReactElement {
   const forgetSession = useCallback((id: string) => {
     if (workspaceRef.current) observations.receive(workspaceRef.current, 'session.deleted', { info: { id } })
     deletedSessions.current.add(id)
+    sessionViews.current.delete(id)
     setSessions(previous => previous.filter(session => session.id !== id))
     setSessionMenu(previous => previous?.id === id ? null : previous)
     markSessionBusy(id, false)
@@ -1630,6 +1705,7 @@ export default function App(): React.ReactElement {
       clearEvents()
       turnKeys.current.clear()
       pendingTurnKey.current = null
+      restoreScroll.current = null
       activeIdRef.current = null
       setActiveId(null)
       setMessages([])
@@ -1706,6 +1782,8 @@ export default function App(): React.ReactElement {
     clearEvents()
     turnKeys.current.clear()
     pendingTurnKey.current = null
+    sessionViews.current.clear()
+    restoreScroll.current = null
     closeSessionMenu()
     sessionListVersion.current++
     deletedSessions.current.clear()
@@ -1972,7 +2050,17 @@ export default function App(): React.ReactElement {
     const observer = new ResizeObserver(() => {
       // ResizeObserver runs after layout and before paint. Deferring again to
       // rAF paints one frame at the old scroll position, then visibly jumps.
-      if (stickBottom.current) el.scrollTop = el.scrollHeight
+      if (stickBottom.current) {
+        el.scrollTop = el.scrollHeight
+        return
+      }
+      // After switching back to a session that was not at the bottom, the
+      // Worker re-formats content asynchronously; keep re-applying the stored
+      // reading position while that settles, then leave the user in control.
+      const restore = restoreScroll.current
+      if (restore && performance.now() < restore.until) {
+        el.scrollTop = Math.min(restore.top, Math.max(0, el.scrollHeight - el.clientHeight))
+      }
     })
     // Worker formatting can change height even when the message text is unchanged.
     observer.observe(content)
@@ -1980,6 +2068,19 @@ export default function App(): React.ReactElement {
       observer.disconnect()
     }
   }, [])
+
+  // Apply the remembered scroll position as soon as the switched-to session's
+  // cached messages are in the DOM, before paint.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    if (stickBottom.current) {
+      el.scrollTop = el.scrollHeight
+      return
+    }
+    const restore = restoreScroll.current
+    if (restore) el.scrollTop = Math.min(restore.top, Math.max(0, el.scrollHeight - el.clientHeight))
+  }, [activeId])
 
   // Reserve space inside the content flow, including a clear gap above the
   // floating composer. Reapply the bottom position when the dock grows.
@@ -2011,8 +2112,20 @@ export default function App(): React.ReactElement {
     if (atBottom || userScrolling.current) {
       stickBottom.current = atBottom
       setFollowingReply(atBottom)
+      followingReplyRef.current = atBottom
     }
     userScrolling.current = false
+    // Keep the per-session snapshot's scroll state current so switching back
+    // restores the exact reading position without waiting for a switch event.
+    const active = activeIdRef.current
+    if (active) {
+      const entry = sessionViews.current.get(active)
+      if (entry) {
+        entry.scrollTop = el.scrollTop
+        entry.stickBottom = stickBottom.current
+        entry.followingReply = followingReplyRef.current
+      }
+    }
   }
 
   // Folding a card taller than the pane drops height that is scrolled above the
