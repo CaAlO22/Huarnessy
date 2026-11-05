@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ClipboardEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { createKernelClient, type KernelClient, type KernelFileEntry, type QuestionRequest, type KernelSubscription } from './kernel-client'
 import { GradFlow } from 'gradflow'
@@ -22,6 +22,11 @@ interface SessionRetry {
   message: string
   next: number
 }
+
+// Stable no-op for props that only matter on the active keep-alive view.
+const noop = (): void => {}
+const EMPTY_TURN_KEYS = new Map<string, string>()
+const EMPTY_MESSAGES: MessageEntry[] = []
 
 // The kernel retries provider calls with exponential backoff. Surface that
 // wait explicitly; otherwise the session looks frozen between attempts.
@@ -997,6 +1002,276 @@ function QuestionDialog({ request, busy, onReply, onReject }: {
   )
 }
 
+// Keep-alive conversation view. The last few opened sessions stay mounted and
+// are hidden with display:none instead of being torn down and re-rendered on
+// every switch: their Worker-rendered Markdown DOM, expansion state and lens
+// maps survive, and switching back only restores the scroll position. Hidden
+// views skip scroll adjustments; ResizeObservers on a display:none subtree
+// report zero sizes and the LiquidGlass map regenerates when the view shows.
+const KEEP_ALIVE_SESSIONS = 3
+
+type SessionConversationProps = {
+  sessionId: string
+  active: boolean
+  workspace: string | null
+  observations: StreamObservations
+  messages: MessageEntry[]
+  reverted: RevertedTurn | null
+  busy: boolean
+  compacting: boolean
+  compactionArrived: boolean
+  turnKeys: Map<string, string>
+  pendingTurnKey: string | null
+  beforeRequestUserId: string | null
+  followNonce: number
+  liquidGlass: boolean
+  initialStickBottom: boolean
+  initialFollowing: boolean
+  restoreScroll: { top: number; until: number } | null
+  composerDockRef: RefObject<HTMLDivElement | null>
+  emptyContent: React.ReactNode
+  onRevert: (message: MessageEntry) => void
+  revertingId: string | null
+  revertDisabled: boolean
+  onCopyError: (message: string) => void
+  onScrollState: (state: { scrollTop: number; stickBottom: boolean; followingReply: boolean }) => void
+}
+
+const SessionConversation = memo(function SessionConversation({
+  sessionId, active, workspace, observations, messages, reverted, busy, compacting,
+  compactionArrived, turnKeys, pendingTurnKey, beforeRequestUserId, followNonce,
+  liquidGlass, initialStickBottom, initialFollowing, restoreScroll, composerDockRef,
+  emptyContent, onRevert, revertingId, revertDisabled, onCopyError, onScrollState,
+}: SessionConversationProps): React.ReactElement {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const stickBottom = useRef(initialStickBottom)
+  const userScrolling = useRef(false)
+  const rangeReading = useRef(false)
+  const collapseScrollFrame = useRef<number | null>(null)
+  const [followingReply, setFollowingReply] = useState(initialFollowing)
+  const followingReplyRef = useRef(followingReply)
+  followingReplyRef.current = followingReply
+  const restoreRef = useRef(restoreScroll)
+  restoreRef.current = restoreScroll
+
+  const visibleMessages = useMemo(() => reverted && reverted.sessionId === sessionId
+    ? messages.filter(message => !reverted.hiddenIds.has(message.info?.id))
+    : messages, [messages, reverted, sessionId])
+
+  const lastUser = [...visibleMessages].reverse().find((message) => message.info?.role === 'user')
+  const awaitingUserEcho = busy && (lastUser?.info?.id ?? null) === beforeRequestUserId
+  if (busy && !awaitingUserEcho && lastUser?.info?.id && pendingTurnKey) {
+    if (!turnKeys.has(lastUser.info.id)) turnKeys.set(lastUser.info.id, pendingTurnKey)
+  }
+
+  // Keep each turn at one stable React position. Moving an older reply into a
+  // different parent would remount its Worker-rendered Markdown on every send.
+  const conversation: React.ReactNode[] = []
+  let turnReplies: MessageEntry[] = []
+  let turnUser: MessageEntry | null = null
+  let turnKey = 'reply-initial'
+  const appendReply = (waiting: boolean): void => {
+    const visible = turnReplies.some((message) => message.parts.some(hasVisiblePart))
+    if (!visible && !waiting) return
+    const replies = turnReplies.filter(message => message.parts.some(hasVisiblePart))
+    const groups: MessageEntry[][] = []
+    for (const message of replies) {
+      const parts = message.parts.filter(hasVisiblePart)
+      if (groups.length > 0 && parts.every(part => part.type === 'tool')) groups[groups.length - 1].push(message)
+      else groups.push([message])
+    }
+    const textLength = groups.at(-1)?.flatMap(group => group.parts).reduce((count, part) =>
+      count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
+    const observed = workspace ? observations.metrics(workspace, sessionId, turnReplies) : undefined
+    const metrics = waiting ? null : replyMetrics(turnUser, turnReplies, observed)
+    conversation.push(
+      <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength} liquidGlass={liquidGlass}>
+        {(visibleChars) => <StepList groups={groups} metrics={metrics} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} onExpandRange={() => { rangeReading.current = true; stickBottom.current = false; setFollowingReply(false) }} />}
+      </ReplyPresentation>
+    )
+  }
+  for (const [index, message] of visibleMessages.entries()) {
+    if (message.info?.role === 'user') {
+      appendReply(false)
+      conversation.push(<MessageView key={message.info?.id ?? `user-${index}`} msg={message} liquidGlass={liquidGlass} onCopyError={onCopyError} onRevert={onRevert} reverting={revertingId === message.info?.id} revertDisabled={revertDisabled} />)
+      turnKey = turnKeys.get(message.info?.id) ?? `reply-${message.info?.id ?? index}`
+      turnReplies = []
+      turnUser = message
+    } else if (isCompactionMessage(message)) {
+      // Close the current turn so the centered compaction card stands alone,
+      // then advance the turn key so a following reply turn cannot reuse it.
+      appendReply(false)
+      conversation.push(<CompactionBlock key={message.info?.id ?? `compaction-${index}`} msg={message} liquidGlass={liquidGlass} />)
+      turnKey = `reply-${message.info?.id ?? index}`
+      turnReplies = []
+      turnUser = null
+    } else {
+      turnReplies.push(message)
+    }
+  }
+  appendReply(busy && !awaitingUserEcho && !compacting)
+  if (busy && awaitingUserEcho && !compacting) {
+    conversation.push(<ReplyPresentation key={pendingTurnKey ?? 'reply-pending'} waiting liquidGlass={liquidGlass} />)
+  }
+  // Compaction is kernel-driven: no user echo precedes it, so show a centered
+  // wait bubble until the summary message itself arrives.
+  if (compacting && !compactionArrived) {
+    conversation.push(<ReplyPresentation key="compaction-pending" waiting waitLabel="等待会话压缩" center wideWait liquidGlass={liquidGlass} />)
+  }
+
+  useEffect(() => {
+    const el = scrollRef.current
+    const content = contentRef.current
+    if (!el || !content) return
+    const observer = new ResizeObserver(() => {
+      // Hidden keep-alive views must not touch scroll state; their content
+      // reports zero sizes while display:none.
+      if (!active) return
+      // ResizeObserver runs after layout and before paint. Deferring again to
+      // rAF paints one frame at the old scroll position, then visibly jumps.
+      if (stickBottom.current) {
+        el.scrollTop = el.scrollHeight
+        return
+      }
+      // After switching back to a session that was not at the bottom, the
+      // Worker re-formats content asynchronously; keep re-applying the stored
+      // reading position while that settles, then leave the user in control.
+      const restore = restoreRef.current
+      if (restore && performance.now() < restore.until) {
+        el.scrollTop = Math.min(restore.top, Math.max(0, el.scrollHeight - el.clientHeight))
+      }
+    })
+    // Worker formatting can change height even when the message text is unchanged.
+    observer.observe(content)
+    return () => {
+      observer.disconnect()
+    }
+  }, [active])
+
+  // Restore the reading position when this view becomes visible again: a
+  // display:none container loses its scroll offset, so the position comes from
+  // the per-session snapshot taken while it was last active.
+  useLayoutEffect(() => {
+    if (!active) return
+    const el = scrollRef.current
+    if (!el) return
+    if (stickBottom.current) {
+      el.scrollTop = el.scrollHeight
+      return
+    }
+    const restore = restoreRef.current
+    if (restore) el.scrollTop = Math.min(restore.top, Math.max(0, el.scrollHeight - el.clientHeight))
+  }, [active])
+
+  // A new send re-engages bottom-following on the active view.
+  const lastFollowNonce = useRef(followNonce)
+  useEffect(() => {
+    if (followNonce === lastFollowNonce.current) return
+    lastFollowNonce.current = followNonce
+    if (!active) return
+    stickBottom.current = true
+    rangeReading.current = false
+    setFollowingReply(true)
+  }, [followNonce, active])
+
+  // Reserve space inside the content flow, including a clear gap above the
+  // floating composer. Reapply the bottom position when the dock grows.
+  useEffect(() => {
+    const el = scrollRef.current
+    const dock = composerDockRef.current
+    if (!active || !el || !dock) return
+    const apply = (): void => {
+      el.style.setProperty('--hui-composer-reserve', `${Math.ceil(dock.getBoundingClientRect().height) + 12}px`)
+      if (stickBottom.current) el.scrollTop = el.scrollHeight
+    }
+    const observer = new ResizeObserver(apply)
+    observer.observe(dock)
+    apply()
+    return () => {
+      observer.disconnect()
+      el.style.removeProperty('--hui-composer-reserve')
+    }
+  }, [active, composerDockRef])
+
+  const onScroll = (): void => {
+    const el = scrollRef.current
+    if (!el) return
+    if (rangeReading.current && !userScrolling.current) return
+    if (userScrolling.current) rangeReading.current = false
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    // Height changes/programmatic scrolling also emit scroll events. They must
+    // not disable following the reply before the ResizeObserver can catch up.
+    if (atBottom || userScrolling.current) {
+      stickBottom.current = atBottom
+      setFollowingReply(atBottom)
+      followingReplyRef.current = atBottom
+    }
+    userScrolling.current = false
+    // Keep the per-session snapshot's scroll state current so switching back
+    // restores the exact reading position even after the view is evicted.
+    if (active) onScrollState({ scrollTop: el.scrollTop, stickBottom: stickBottom.current, followingReply: followingReplyRef.current })
+  }
+
+  // Folding a card taller than the pane drops height that is scrolled above the
+  // viewport, so with scroll anchoring off the content below snaps upward. This
+  // tracks the card's animating height and moves the scroll up by the same
+  // amount each frame, turning that snap into a smooth scroll. It is skipped at
+  // the bottom (the ResizeObserver already follows) and when the card top is in
+  // view (the fold is already an in-place motion).
+  const adjustScrollForCollapse = useCallback((card: HTMLElement | null): void => {
+    const el = scrollRef.current
+    if (!el || !card) return
+    if (collapseScrollFrame.current !== null) { cancelAnimationFrame(collapseScrollFrame.current); collapseScrollFrame.current = null }
+    if (stickBottom.current) return
+    const containerTop = el.getBoundingClientRect().top
+    if (card.getBoundingClientRect().top >= containerTop - 1) return
+    const startTop = el.scrollTop
+    const startHeight = card.getBoundingClientRect().height
+    const started = performance.now()
+    const follow = (now: number): void => {
+      if (!card.isConnected) { collapseScrollFrame.current = null; return }
+      const collapsed = Math.max(0, startHeight - card.getBoundingClientRect().height)
+      el.scrollTop = Math.max(0, startTop - collapsed)
+      collapseScrollFrame.current = now - started < 520 ? requestAnimationFrame(follow) : null
+    }
+    collapseScrollFrame.current = requestAnimationFrame(follow)
+  }, [])
+
+  useEffect(() => () => {
+    if (collapseScrollFrame.current !== null) cancelAnimationFrame(collapseScrollFrame.current)
+  }, [])
+
+  return (
+    <CollapseScrollContext.Provider value={adjustScrollForCollapse}>
+      <div
+        ref={scrollRef}
+        data-session-id={sessionId}
+        data-active={active}
+        aria-hidden={!active}
+        style={active ? undefined : { display: 'none' }}
+        onScroll={onScroll}
+        onWheel={(event) => {
+          userScrolling.current = true
+          if (event.deltaY < 0) { stickBottom.current = false; setFollowingReply(false) }
+        }}
+        onPointerDown={(event) => {
+          if (event.clientX >= event.currentTarget.getBoundingClientRect().right - 12) userScrolling.current = true
+        }}
+        onTouchStart={() => { userScrolling.current = true }}
+        onKeyDown={(event) => {
+          if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) userScrolling.current = true
+        }}
+        className="hui-chat-scroll min-h-0 flex-1 overflow-y-auto p-5"
+      >
+        <div ref={contentRef} className={`hui-chat-content space-y-4 ${visibleMessages.length === 0 && !busy ? 'h-full' : ''}`}>
+          {visibleMessages.length === 0 && !busy ? (active ? emptyContent : null) : conversation}
+        </div>
+      </div>
+    </CollapseScrollContext.Provider>
+  )
+})
+
 export default function App(): React.ReactElement {
   const [windowMaximized, setWindowMaximized] = useState(false)
   useEffect(() => {
@@ -1154,7 +1429,6 @@ export default function App(): React.ReactElement {
   const [atLoading, setAtLoading] = useState(false)
   const [atHighlight, setAtHighlight] = useState(0)
   const [atDismissed, setAtDismissed] = useState(false)
-  const [followingReply, setFollowingReply] = useState(true)
 
   const clientRef = useRef<KernelClient | null>(null)
   const workspaceRef = useRef<string | null>(null)
@@ -1172,13 +1446,12 @@ export default function App(): React.ReactElement {
   const esRef = useRef<KernelSubscription | null>(null)
   const activeIdRef = useRef<string | null>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const scrollRef = useRef<HTMLDivElement | null>(null)
-  const contentRef = useRef<HTMLDivElement | null>(null)
   const composerDockRef = useRef<HTMLDivElement | null>(null)
-  const stickBottom = useRef(true)
-  const userScrolling = useRef(false)
-  const rangeReading = useRef(false)
-  const collapseScrollFrame = useRef<number | null>(null)
+  // Recently opened sessions stay mounted (see SessionConversation); the most
+  // recent KEEP_ALIVE_SESSIONS ids, active first.
+  const [keepAliveIds, setKeepAliveIds] = useState<string[]>([])
+  // Incremented on send so the active view re-engages bottom-following.
+  const [followNonce, setFollowNonce] = useState(0)
   const deletedSessions = useRef(new Set<string>())
   const sessionListVersion = useRef(0)
   const deletingRef = useRef<{ client: any; id: string } | null>(null)
@@ -1205,8 +1478,6 @@ export default function App(): React.ReactElement {
   messagesRef.current = messages
   const busyRef = useRef(false)
   busyRef.current = busy
-  const followingReplyRef = useRef(followingReply)
-  followingReplyRef.current = followingReply
 
   const rememberSessionView = useCallback((id: string): SessionViewSnapshot => {
     const views = sessionViews.current
@@ -1634,16 +1905,8 @@ export default function App(): React.ReactElement {
     // Re-clicking the open session must not blank and re-render it. An empty,
     // idle pane is the retry path after a failed open, so only then re-fetch.
     if (id === activeIdRef.current && (messagesRef.current.length > 0 || busyRef.current)) return
-    const previousId = activeIdRef.current
-    if (previousId && previousId !== id) {
-      const leaving = sessionViews.current.get(previousId)
-      if (leaving) {
-        leaving.scrollTop = scrollRef.current?.scrollTop ?? leaving.scrollTop
-        leaving.stickBottom = stickBottom.current
-        leaving.followingReply = followingReplyRef.current
-      }
-    }
     clearEvents()
+    setKeepAliveIds(previous => [id, ...previous.filter(sessionId => sessionId !== id)].slice(0, KEEP_ALIVE_SESSIONS))
     // Show the cached snapshot immediately when we have one; the REST fetch
     // below still reconciles, and identical content keeps memoized message
     // components (and their Worker-rendered Markdown DOM) mounted untouched.
@@ -1666,10 +1929,9 @@ export default function App(): React.ReactElement {
     setAnsweringQuestion(false)
     void loadQuestions(id)
     setReverted(cached?.reverted && cached.reverted.sessionId === id ? cached.reverted : null)
-    stickBottom.current = cached ? cached.stickBottom : true
-    rangeReading.current = false
-    setFollowingReply(cached ? cached.followingReply : true)
-    followingReplyRef.current = cached ? cached.followingReply : true
+    // A keep-alive view keeps its own scroll state; a freshly mounted view
+    // initializes from the snapshot. Non-sticky views restore their reading
+    // position when they become active again (display:none resets scrollTop).
     restoreScroll.current = cached && !cached.stickBottom
       ? { top: cached.scrollTop, until: performance.now() + 1500 }
       : null
@@ -1697,6 +1959,7 @@ export default function App(): React.ReactElement {
     if (workspaceRef.current) observations.receive(workspaceRef.current, 'session.deleted', { info: { id } })
     deletedSessions.current.add(id)
     sessionViews.current.delete(id)
+    setKeepAliveIds(previous => previous.filter(sessionId => sessionId !== id))
     setSessions(previous => previous.filter(session => session.id !== id))
     setSessionMenu(previous => previous?.id === id ? null : previous)
     markSessionBusy(id, false)
@@ -1715,9 +1978,6 @@ export default function App(): React.ReactElement {
       revertOperation.current = null
       setRevertingId(null)
       setLastError(null)
-      stickBottom.current = true
-      rangeReading.current = false
-      setFollowingReply(true)
     }
   }, [clearEvents, clearSessionRetry, markSessionBusy])
 
@@ -1784,6 +2044,7 @@ export default function App(): React.ReactElement {
     pendingTurnKey.current = null
     sessionViews.current.clear()
     restoreScroll.current = null
+    setKeepAliveIds([])
     closeSessionMenu()
     sessionListVersion.current++
     deletedSessions.current.clear()
@@ -1812,9 +2073,6 @@ export default function App(): React.ReactElement {
     setEventLost(false)
     setInput('')
     setLastError(null)
-    stickBottom.current = true
-    rangeReading.current = false
-    setFollowingReply(true)
   }, [clearEvents, closeSessionMenu])
 
   const chooseWorkspace = useCallback(async () => {
@@ -2043,118 +2301,14 @@ export default function App(): React.ReactElement {
     syncSessionStatus
   ])
 
-  useEffect(() => {
-    const el = scrollRef.current
-    const content = contentRef.current
-    if (!el || !content) return
-    const observer = new ResizeObserver(() => {
-      // ResizeObserver runs after layout and before paint. Deferring again to
-      // rAF paints one frame at the old scroll position, then visibly jumps.
-      if (stickBottom.current) {
-        el.scrollTop = el.scrollHeight
-        return
-      }
-      // After switching back to a session that was not at the bottom, the
-      // Worker re-formats content asynchronously; keep re-applying the stored
-      // reading position while that settles, then leave the user in control.
-      const restore = restoreScroll.current
-      if (restore && performance.now() < restore.until) {
-        el.scrollTop = Math.min(restore.top, Math.max(0, el.scrollHeight - el.clientHeight))
-      }
-    })
-    // Worker formatting can change height even when the message text is unchanged.
-    observer.observe(content)
-    return () => {
-      observer.disconnect()
-    }
-  }, [])
-
-  // Apply the remembered scroll position as soon as the switched-to session's
-  // cached messages are in the DOM, before paint.
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    if (stickBottom.current) {
-      el.scrollTop = el.scrollHeight
-      return
-    }
-    const restore = restoreScroll.current
-    if (restore) el.scrollTop = Math.min(restore.top, Math.max(0, el.scrollHeight - el.clientHeight))
-  }, [activeId])
-
-  // Reserve space inside the content flow, including a clear gap above the
-  // floating composer. Reapply the bottom position when the dock grows.
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    const dock = composerDockRef.current
-    if (!el || !dock) return
-    const apply = (): void => {
-      el.style.setProperty('--hui-composer-reserve', `${Math.ceil(dock.getBoundingClientRect().height) + 12}px`)
-      if (stickBottom.current) el.scrollTop = el.scrollHeight
-    }
-    const observer = new ResizeObserver(apply)
-    observer.observe(dock)
-    apply()
-    return () => {
-      observer.disconnect()
-      el.style.removeProperty('--hui-composer-reserve')
-    }
-  }, [])
-
-  const onScroll = (): void => {
-    const el = scrollRef.current
-    if (!el) return
-    if (rangeReading.current && !userScrolling.current) return
-    if (userScrolling.current) rangeReading.current = false
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    // Height changes/programmatic scrolling also emit scroll events. They must
-    // not disable following the reply before the ResizeObserver can catch up.
-    if (atBottom || userScrolling.current) {
-      stickBottom.current = atBottom
-      setFollowingReply(atBottom)
-      followingReplyRef.current = atBottom
-    }
-    userScrolling.current = false
-    // Keep the per-session snapshot's scroll state current so switching back
-    // restores the exact reading position without waiting for a switch event.
-    const active = activeIdRef.current
-    if (active) {
-      const entry = sessionViews.current.get(active)
-      if (entry) {
-        entry.scrollTop = el.scrollTop
-        entry.stickBottom = stickBottom.current
-        entry.followingReply = followingReplyRef.current
-      }
-    }
-  }
-
-  // Folding a card taller than the pane drops height that is scrolled above the
-  // viewport, so with scroll anchoring off the content below snaps upward. This
-  // tracks the card's animating height and moves the scroll up by the same
-  // amount each frame, turning that snap into a smooth scroll. It is skipped at
-  // the bottom (the ResizeObserver already follows) and when the card top is in
-  // view (the fold is already an in-place motion).
-  const adjustScrollForCollapse = useCallback((card: HTMLElement | null): void => {
-    const el = scrollRef.current
-    if (!el || !card) return
-    if (collapseScrollFrame.current !== null) { cancelAnimationFrame(collapseScrollFrame.current); collapseScrollFrame.current = null }
-    if (stickBottom.current) return
-    const containerTop = el.getBoundingClientRect().top
-    if (card.getBoundingClientRect().top >= containerTop - 1) return
-    const startTop = el.scrollTop
-    const startHeight = card.getBoundingClientRect().height
-    const started = performance.now()
-    const follow = (now: number): void => {
-      if (!card.isConnected) { collapseScrollFrame.current = null; return }
-      const collapsed = Math.max(0, startHeight - card.getBoundingClientRect().height)
-      el.scrollTop = Math.max(0, startTop - collapsed)
-      collapseScrollFrame.current = now - started < 520 ? requestAnimationFrame(follow) : null
-    }
-    collapseScrollFrame.current = requestAnimationFrame(follow)
-  }, [])
-
-  useEffect(() => () => {
-    if (collapseScrollFrame.current !== null) cancelAnimationFrame(collapseScrollFrame.current)
+  // The active view reports its scroll state so the per-session snapshot can
+  // restore it after eviction, workspace reload or the display:none reset.
+  const handleScrollState = useCallback((id: string, state: { scrollTop: number; stickBottom: boolean; followingReply: boolean }): void => {
+    const entry = sessionViews.current.get(id)
+    if (!entry) return
+    entry.scrollTop = state.scrollTop
+    entry.stickBottom = state.stickBottom
+    entry.followingReply = state.followingReply
   }, [])
 
   useEffect(() => {
@@ -2215,9 +2369,7 @@ export default function App(): React.ReactElement {
     markSessionBusy(requestId, true)
     sendingRef.current = true
     setLastError(null)
-    stickBottom.current = true
-    rangeReading.current = false
-    setFollowingReply(true)
+    setFollowNonce(previous => previous + 1)
 
     let observedSession: string | null = null
     try {
@@ -2228,10 +2380,12 @@ export default function App(): React.ReactElement {
         const s = unwrap(r)
         id = s?.id ?? null
         if (id) {
+          const createdId = id
           clearEvents()
-          setActiveId(id)
-          activeIdRef.current = id
-          markSessionBusy(id, true)
+          setActiveId(createdId)
+          activeIdRef.current = createdId
+          setKeepAliveIds(previous => [createdId, ...previous.filter(sessionId => sessionId !== createdId)].slice(0, KEEP_ALIVE_SESSIONS))
+          markSessionBusy(createdId, true)
           setMessages([])
           await loadSessions()
         }
@@ -2385,67 +2539,16 @@ export default function App(): React.ReactElement {
     : '—'
 
   const lastUser = [...visibleMessages].reverse().find((message) => message.info?.role === 'user')
-  const awaitingUserEcho = busy && (lastUser?.info?.id ?? null) === beforeRequestUserId.current
-  if (busy && !awaitingUserEcho && lastUser?.info?.id && pendingTurnKey.current) {
-    if (!turnKeys.current.has(lastUser.info.id)) turnKeys.current.set(lastUser.info.id, pendingTurnKey.current)
-  }
-
-  // Keep each turn at one stable React position. Moving an older reply into a
-  // different parent would remount its Worker-rendered Markdown on every send.
-  const conversation: React.ReactNode[] = []
-  let turnReplies: MessageEntry[] = []
-  let turnUser: MessageEntry | null = null
-  let turnKey = 'reply-initial'
-  const appendReply = (waiting: boolean): void => {
-    const visible = turnReplies.some((message) => message.parts.some(hasVisiblePart))
-    if (!visible && !waiting) return
-    const replies = turnReplies.filter(message => message.parts.some(hasVisiblePart))
-    const groups: MessageEntry[][] = []
-    for (const message of replies) {
-      const parts = message.parts.filter(hasVisiblePart)
-      if (groups.length > 0 && parts.every(part => part.type === 'tool')) groups[groups.length - 1].push(message)
-      else groups.push([message])
-    }
-    const textLength = groups.at(-1)?.flatMap(group => group.parts).reduce((count, part) =>
-      count + ((part.type === 'text' || part.type === 'reasoning') ? (part.text?.length ?? 0) : 0), 0) ?? 0
-    const observed = workspace && activeId ? observations.metrics(workspace, activeId, turnReplies) : undefined
-    const metrics = waiting ? null : replyMetrics(turnUser, turnReplies, observed)
-    conversation.push(
-      <ReplyPresentation key={turnKey} waiting={waiting && !visible} textLength={textLength} liquidGlass={liquidGlass}>
-        {(visibleChars) => <StepList groups={groups} metrics={metrics} visibleChars={visibleChars} liquidGlass={liquidGlass} canCompact={followingReply} onExpandRange={() => { rangeReading.current = true; stickBottom.current = false; setFollowingReply(false) }} />}
-      </ReplyPresentation>
-    )
-  }
-  const compactingActive = compactingSessionId !== null && compactingSessionId === activeId
   const compactionArrived = visibleMessages.some(message => isCompactionMessage(message) && !compactionKnownIds.current.has(message.info?.id))
-  for (const [index, message] of visibleMessages.entries()) {
-    if (message.info?.role === 'user') {
-      appendReply(false)
-      conversation.push(<MessageView key={message.info?.id ?? `user-${index}`} msg={message} liquidGlass={liquidGlass} onCopyError={setLastError} onRevert={revertMessage} reverting={revertingId === message.info?.id} revertDisabled={revertingId !== null} />)
-      turnKey = turnKeys.current.get(message.info?.id) ?? `reply-${message.info?.id ?? index}`
-      turnReplies = []
-      turnUser = message
-    } else if (isCompactionMessage(message)) {
-      // Close the current turn so the centered compaction card stands alone,
-      // then advance the turn key so a following reply turn cannot reuse it.
-      appendReply(false)
-      conversation.push(<CompactionBlock key={message.info?.id ?? `compaction-${index}`} msg={message} liquidGlass={liquidGlass} />)
-      turnKey = `reply-${message.info?.id ?? index}`
-      turnReplies = []
-      turnUser = null
-    } else {
-      turnReplies.push(message)
-    }
-  }
-  appendReply(busy && !awaitingUserEcho && !compactingActive)
-  if (busy && awaitingUserEcho && !compactingActive) {
-    conversation.push(<ReplyPresentation key={pendingTurnKey.current ?? 'reply-pending'} waiting liquidGlass={liquidGlass} />)
-  }
-  // Compaction is kernel-driven: no user echo precedes it, so show a centered
-  // wait bubble until the summary message itself arrives.
-  if (compactingActive && !compactionArrived) {
-    conversation.push(<ReplyPresentation key="compaction-pending" waiting waitLabel="等待会话压缩" center wideWait liquidGlass={liquidGlass} />)
-  }
+
+  // Empty-pane content for the active view (connection status or the prompt
+  // to start a conversation). Keep-alive views render it only while active.
+  const emptyContent = <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
+    {server?.status !== 'ready' || initializing || eventLost || Object.keys(connectionIssues).length ? <ConnectionStatus server={server} loading={initializing} lost={eventLost} issues={Object.values(connectionIssues)} requests={kernelClient?.diagnostics} card /> : <>
+      <div className="text-lg font-medium text-white/60">开始一段对话</div>
+      <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
+    </>}
+  </div>
 
   // Runs a client-side built-in command immediately: these take no arguments,
   // so selecting one from the slash menu executes instead of completing text.
@@ -2495,8 +2598,7 @@ export default function App(): React.ReactElement {
   }
 
   return (
-    <CollapseScrollContext.Provider value={adjustScrollForCollapse}>
-      <div className={`hui-window-shell relative flex h-screen w-screen flex-col overflow-hidden${windowMaximized ? ' is-maximized' : ''}`} style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
+    <div className={`hui-window-shell relative flex h-screen w-screen flex-col overflow-hidden${windowMaximized ? ' is-maximized' : ''}`} style={{ '--hui-panel-strength': 1 - panelTransparency / 100, '--hui-chat-font-size': `${chatFontSize}px` } as CSSProperties}>
       <div className="app-bg" data-mode={backgroundMode} aria-hidden="true">
         {backgroundMode === 'color' ? <GradFlow config={colorFlow} /> : null}
         {backgroundMode === 'subtle' ? <MottledBackground /> : null}
@@ -2725,33 +2827,100 @@ export default function App(): React.ReactElement {
 
         <main className="glass hui-chat-pane flex min-w-0 flex-1 flex-col rounded-2xl" style={{ backdropFilter: 'none', WebkitBackdropFilter: 'none' }}>
           <div className="hui-chat-pane-backdrop" style={plainGlassFilter} aria-hidden="true" />
-          <div
-            ref={scrollRef}
-            onScroll={onScroll}
-            onWheel={(event) => {
-              userScrolling.current = true
-              if (event.deltaY < 0) { stickBottom.current = false; setFollowingReply(false) }
-            }}
-            onPointerDown={(event) => {
-              if (event.clientX >= event.currentTarget.getBoundingClientRect().right - 12) userScrolling.current = true
-            }}
-            onTouchStart={() => { userScrolling.current = true }}
-            onKeyDown={(event) => {
-              if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) userScrolling.current = true
-            }}
-            className="hui-chat-scroll min-h-0 flex-1 overflow-y-auto p-5"
-          >
-            <div ref={contentRef} className={`hui-chat-content space-y-4 ${visibleMessages.length === 0 && !busy ? 'h-full' : ''}`}>
-              {visibleMessages.length === 0 && !busy ? (
-                <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-white/40">
-                  {server?.status !== 'ready' || initializing || eventLost || Object.keys(connectionIssues).length ? <ConnectionStatus server={server} loading={initializing} lost={eventLost} issues={Object.values(connectionIssues)} requests={kernelClient?.diagnostics} card /> : <>
-                    <div className="text-lg font-medium text-white/60">开始一段对话</div>
-                    <div className="text-xs">在下方输入内容，回车发送 · 支持 Markdown 与 LaTeX</div>
-                  </>}
-                </div>
-              ) : conversation}
-            </div>
-          </div>
+          {keepAliveIds.map((id) => {
+            if (id === activeId) {
+              const entry = sessionViews.current.get(id)
+              return (
+                <SessionConversation
+                  key={id}
+                  sessionId={id}
+                  active
+                  workspace={workspace}
+                  observations={observations}
+                  messages={messages}
+                  reverted={reverted}
+                  busy={busy}
+                  compacting={compactingSessionId === id}
+                  compactionArrived={compactionArrived}
+                  turnKeys={turnKeys.current}
+                  pendingTurnKey={pendingTurnKey.current}
+                  beforeRequestUserId={beforeRequestUserId.current}
+                  followNonce={followNonce}
+                  liquidGlass={liquidGlass}
+                  initialStickBottom={entry?.stickBottom ?? true}
+                  initialFollowing={entry?.followingReply ?? true}
+                  restoreScroll={restoreScroll.current}
+                  composerDockRef={composerDockRef}
+                  emptyContent={emptyContent}
+                  onRevert={revertMessage}
+                  revertingId={revertingId}
+                  revertDisabled={revertingId !== null}
+                  onCopyError={setLastError}
+                  onScrollState={(state) => handleScrollState(id, state)}
+                />
+              )
+            }
+            const cached = sessionViews.current.get(id)
+            if (!cached) return null
+            return (
+              <SessionConversation
+                key={id}
+                sessionId={id}
+                active={false}
+                workspace={workspace}
+                observations={observations}
+                messages={cached.messages}
+                reverted={cached.reverted}
+                busy={busySessions.has(id)}
+                compacting={false}
+                compactionArrived={false}
+                turnKeys={cached.turnKeys}
+                pendingTurnKey={null}
+                beforeRequestUserId={null}
+                followNonce={followNonce}
+                liquidGlass={liquidGlass}
+                initialStickBottom={cached.stickBottom}
+                initialFollowing={cached.followingReply}
+                restoreScroll={null}
+                composerDockRef={composerDockRef}
+                emptyContent={null}
+                onRevert={noop}
+                revertingId={null}
+                revertDisabled={false}
+                onCopyError={setLastError}
+                onScrollState={noop}
+              />
+            )
+          })}
+          {activeId === null ? (
+            <SessionConversation
+              key="empty-pane"
+              sessionId=""
+              active
+              workspace={workspace}
+              observations={observations}
+              messages={EMPTY_MESSAGES}
+              reverted={null}
+              busy={false}
+              compacting={false}
+              compactionArrived={false}
+              turnKeys={EMPTY_TURN_KEYS}
+              pendingTurnKey={null}
+              beforeRequestUserId={null}
+              followNonce={followNonce}
+              liquidGlass={liquidGlass}
+              initialStickBottom
+              initialFollowing
+              restoreScroll={null}
+              composerDockRef={composerDockRef}
+              emptyContent={emptyContent}
+              onRevert={noop}
+              revertingId={null}
+              revertDisabled={false}
+              onCopyError={setLastError}
+              onScrollState={noop}
+            />
+          ) : null}
 
           <div ref={composerDockRef} className="hui-composer-dock">
             <div className="mx-auto w-full max-w-[684px]">
@@ -2959,6 +3128,5 @@ export default function App(): React.ReactElement {
         </main>
       </div>
     </div>
-    </CollapseScrollContext.Provider>
   )
 }

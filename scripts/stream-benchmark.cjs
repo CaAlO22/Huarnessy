@@ -151,7 +151,9 @@ const regressions = async () => {
   delta(' pending')
   Array.from(document.querySelectorAll('button')).find(b => b.title === 'Other session').click()
   await new Promise(resolve => setTimeout(resolve, 100))
-  check(!document.querySelector('.hui-md'), 'pending deltas do not leak into another session')
+  // Keep-alive keeps the previous session's DOM mounted but hidden; the leak
+  // check must target the visible (active) conversation.
+  check(!document.querySelector('.hui-chat-scroll[data-active="true"] .hui-md'), 'pending deltas do not leak into another session')
   Array.from(document.querySelectorAll('button')).find(b => b.title === 'Streaming benchmark').click()
   await new Promise(resolve => setTimeout(resolve, 100))
 

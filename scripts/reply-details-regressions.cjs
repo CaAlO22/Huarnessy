@@ -174,7 +174,9 @@ module.exports = async () => {
   emit('message.updated', { info: { ...assistant, time: { ...assistant.time, completed: Date.now() }, tokens: { output: 40, reasoning: 20 } } })
   emit('session.idle', { sessionID })
   await wait(100)
-  check(!document.querySelector('[data-message-id="observed-reply"]'), 'background receipt measurements never inject content into the selected session')
+  // Keep-alive keeps the background session's bubbles mounted but hidden;
+  // injection is judged against the active conversation only.
+  check(!document.querySelector('.hui-chat-scroll[data-active="true"] [data-message-id="observed-reply"]'), 'background receipt measurements never inject content into the selected session')
   sessionButton('Streaming benchmark').click()
   await wait(150)
   const recorded = JSON.parse(localStorage.getItem('hui.stream-observations.v1')).find(record => record.message === assistant.id)
